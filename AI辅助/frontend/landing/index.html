@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI 代码教练扩展</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main class="page">
+    <section class="hero">
+      <p class="eyebrow">Browser Extension</p>
+      <h1>AI 代码教练扩展</h1>
+      <p class="subtitle">
+        这是一个浏览器扩展，会在网页右下角注入代码编辑浮窗。你可以直接在文本框里敲代码，写到某一行时让 AI 给出下一段建议，也可以检查前面已经写好的内容是否有语法或逻辑错误。
+      </p>
+    </section>
+
+    <section class="grid">
+      <article class="card">
+        <h2>安装方式</h2>
+        <ol>
+          <li>打开 Chrome 或 Edge 的扩展管理页面。</li>
+          <li>开启开发者模式。</li>
+          <li>点击“加载已解压的扩展程序”。</li>
+          <li>选择当前项目文件夹。</li>
+        </ol>
+      </article>
+
+      <article class="card">
+        <h2>配置方式</h2>
+        <ol>
+          <li>点击浏览器右上角扩展图标。</li>
+          <li>填写 OpenAI 兼容的 AI 地址、模型和 API Key。</li>
+          <li>题目来源默认自动识别：在洛谷或力扣题目页会优先连接公开题面；也可以改为当前页面或自定义服务器。</li>
+          <li>保存配置后刷新学习网页。</li>
+        </ol>
+      </article>
+
+      <article class="card wide">
+        <h2>使用流程</h2>
+        <ol>
+          <li>点击网页右下角的 AI 按钮打开浮窗。</li>
+          <li>点击“同步题目”，扩展会从洛谷/力扣公开题面、自定义服务器或当前网页读取上下文，不需要复制粘贴题目。</li>
+          <li>在代码框里直接写代码，把光标停在当前写到的位置。</li>
+          <li>点击“下一段该写什么”，AI 会给出接下来应该补的一小段代码。</li>
+          <li>点击“检查已有代码”，AI 会检查当前代码里的语法、变量、输入输出和明显逻辑问题。</li>
+        </ol>
+      </article>
+    </section>
+  </main>
+</body>
+</html>

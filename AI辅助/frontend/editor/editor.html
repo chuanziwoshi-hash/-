@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>码伴 CodeMate - 独立编辑器</title>
+  <link rel="stylesheet" href="editor.css">
+</head>
+<body>
+  <main class="workspace">
+    <header class="topbar">
+      <div class="brand">
+        <span class="mark">码</span>
+        <div>
+          <h1>码伴 CodeMate</h1>
+          <p id="source-title">源页面：等待连接</p>
+        </div>
+      </div>
+      <div class="top-actions">
+        <button id="sync-btn" class="secondary" type="button">同步题目</button>
+        <button id="insert-page-btn" class="primary" type="button">插入到页面</button>
+      </div>
+    </header>
+
+    <section class="controls" aria-label="编辑控制">
+      <label>
+        <span>语言</span>
+        <select id="language">
+          <option value="auto">自动识别</option>
+          <option value="javascript">JavaScript</option>
+          <option value="typescript">TypeScript</option>
+          <option value="python">Python</option>
+          <option value="c">C</option>
+          <option value="cpp98">C++98</option>
+          <option value="cpp11">C++11</option>
+          <option value="cpp14">C++14</option>
+          <option value="cpp17">C++17</option>
+          <option value="cpp20">C++20</option>
+          <option value="java8">Java 8</option>
+          <option value="java11">Java 11</option>
+          <option value="java17">Java 17</option>
+          <option value="csharp">C#</option>
+          <option value="go">Go</option>
+          <option value="html">HTML</option>
+          <option value="css">CSS</option>
+        </select>
+      </label>
+
+      <label>
+        <span>建议范围</span>
+        <select id="suggestion-scope">
+          <option value="small">只补光标处一小段</option>
+          <option value="block">只补当前代码块</option>
+          <option value="function">只补当前函数</option>
+        </select>
+      </label>
+
+      <button id="next-btn" class="primary" type="button">下一段</button>
+      <button id="check-btn" class="danger" type="button">检查代码</button>
+      <button id="explain-btn" class="secondary" type="button">解释选中</button>
+      <button id="insert-suggestion-btn" class="secondary" type="button">插入建议</button>
+      <button id="format-btn" class="secondary" type="button">格式化</button>
+      <button id="stop-btn" class="danger" type="button" hidden>停止</button>
+    </section>
+
+    <section class="panes">
+      <section class="pane problem-pane" aria-label="题目上下文">
+        <div class="pane-head">
+          <h2>题目</h2>
+          <span id="problem-status">未同步</span>
+        </div>
+        <textarea id="problem" spellcheck="false"></textarea>
+      </section>
+
+      <section class="pane code-pane" aria-label="代码编辑器">
+        <div class="pane-head">
+          <h2>代码</h2>
+          <span id="cursor-status">第 1 行，第 1 列</span>
+        </div>
+        <div class="code-frame">
+          <pre id="line-numbers" aria-hidden="true">1</pre>
+          <textarea id="code" spellcheck="false"></textarea>
+        </div>
+      </section>
+
+      <section class="pane output-pane" aria-label="AI 输出">
+        <div class="pane-head">
+          <h2>输出</h2>
+          <span id="save-status">草稿未保存</span>
+        </div>
+        <pre id="output" tabindex="0">准备就绪</pre>
+      </section>
+    </section>
+  </main>
+
+  <script src="../../content/assistant-core.js"></script>
+  <script src="editor.js"></script>
+</body>
+</html>

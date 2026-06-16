@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>码伴 CodeMate 配置</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <main class="popup">
+    <section class="top">
+      <span class="badge">码</span>
+      <div>
+        <h1>码伴 CodeMate</h1>
+        <p>在网页浮窗或独立窗口里直接写代码，按按钮获取下一段建议并检查已有错误。</p>
+      </div>
+    </section>
+
+    <button id="external-editor-btn" class="launch-editor" type="button">打开独立编辑窗口</button>
+
+    <section class="settings">
+      <h2>AI 接口</h2>
+
+      <label for="api-endpoint">AI API 地址</label>
+      <input id="api-endpoint" type="text" value="https://api.openai.com/v1/chat/completions">
+      <button id="complete-endpoint-btn" class="secondary" type="button">补全为 Chat Completions 地址</button>
+
+      <label for="model">模型</label>
+      <input id="model" type="text" value="gpt-4o-mini">
+
+      <label for="timeout-seconds">超时时间，单位秒</label>
+      <input id="timeout-seconds" type="number" min="30" max="300" value="90">
+
+      <label for="api-key">API Key</label>
+      <input id="api-key" type="password" placeholder="OpenAI 兼容服务填写；本地服务可留空">
+
+      <button id="save-btn" type="button">保存配置</button>
+      <button id="test-btn" class="secondary" type="button">测试 AI 连接</button>
+    </section>
+
+    <section class="settings">
+      <h2>题目服务器，可选</h2>
+
+      <label for="problem-source">题目来源</label>
+      <select id="problem-source">
+        <option value="auto">自动：优先识别洛谷/力扣，失败后用页面内容</option>
+        <option value="luogu">只连接洛谷题目页</option>
+        <option value="leetcode">只连接力扣题目页</option>
+        <option value="page">只读取当前网页内容</option>
+        <option value="custom">自定义题目服务器</option>
+      </select>
+
+      <label for="problem-server-endpoint">题目服务器地址</label>
+      <input id="problem-server-endpoint" type="text" placeholder="例如 http://127.0.0.1:8787/problem-context">
+      <p class="help">洛谷/力扣模式会读取公开题目页，例如 https://www.luogu.com.cn/problem/P1001 或 https://leetcode.cn/problems/two-sum/description/。自定义服务器留空时，扩展会自动读取当前网页正文。</p>
+
+      <label for="problem-server-token">服务器 Token</label>
+      <input id="problem-server-token" type="password" placeholder="需要鉴权时填写，可留空">
+
+      <button id="test-problem-server-btn" class="secondary" type="button">测试题目来源</button>
+      <p id="status" class="status"></p>
+    </section>
+
+    <section class="usage">
+      <h2>使用方式</h2>
+      <ol>
+        <li>保存配置后刷新要练习的网页。</li>
+        <li>点击页面右下角“码”按钮，打开代码编辑浮窗。</li>
+        <li>点击“同步题目”，再在代码框里直接写代码。</li>
+        <li>写到某一行时，把光标停在那里，点击“下一段该写什么”。</li>
+        <li>点击“检查已有代码”可以检查当前代码里的语法和逻辑问题。</li>
+      </ol>
+    </section>
+  </main>
+
+  <script src="popup.js"></script>
+</body>
+</html>

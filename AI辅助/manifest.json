@@ -1,0 +1,32 @@
+{
+  "manifest_version": 3,
+  "name": "码伴 CodeMate",
+  "version": "1.0.0",
+  "description": "An AI coding companion with a floating editor, separate editor window, next-step suggestions, code checks, and problem context sync.",
+  "permissions": ["activeTab", "contextMenus", "storage", "scripting", "clipboardWrite", "debugger"],
+  "host_permissions": ["<all_urls>"],
+  "action": {
+    "default_title": "码伴 CodeMate",
+    "default_popup": "frontend/popup/popup.html"
+  },
+  "commands": {
+    "open-external-editor": {
+      "suggested_key": {
+        "default": "Ctrl+M",
+        "mac": "Command+Shift+U"
+      },
+      "description": "Toggle the separate CodeMate editor window"
+    }
+  },
+  "background": {
+    "service_worker": "background/background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content/assistant-core.js", "content/draft-history.js", "content/content-script.js"],
+      "css": ["content/content-style.css"],
+      "run_at": "document_idle"
+    }
+  ]
+}
