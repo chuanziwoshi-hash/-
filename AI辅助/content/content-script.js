@@ -169,6 +169,11 @@
         box-shadow: 0 24px 70px rgba(16, 32, 51, 0.25);
       }
 
+      .panel,
+      .panel * {
+        box-sizing: border-box;
+      }
+
       .panel.open {
         display: grid;
         grid-template-rows: auto 1fr auto;
@@ -407,17 +412,19 @@
       }
 
       .problem {
-        min-height: 86px;
+        min-height: 0;
+        height: 100%;
+        overflow: auto;
         font-size: 13px;
         color: #24374d;
       }
 
       .panel.reading-mode .problem {
-        min-height: 58px;
+        min-height: 0;
       }
 
       .panel.problem-expanded .problem {
-        min-height: 430px;
+        min-height: 0;
       }
 
       .code-editor {

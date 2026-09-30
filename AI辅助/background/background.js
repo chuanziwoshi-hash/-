@@ -792,23 +792,24 @@ async function callCodingAI(messages, options = {}) {
     headers.Authorization = "Bearer " + apiKey;
   }
 
-  const response = await fetchWithTimeout(apiEndpoint, {
+  const requestBody = {
+    model,
+    messages,
+    temperature: 0.1,
+    max_tokens: getMaxTokens(messages),
+    stream: false
+  };
+  let response = await fetchWithTimeout(apiEndpoint, {
     method: "POST",
     headers,
-    body: JSON.stringify({
-      model,
-      messages,
-      temperature: 0.1,
-      max_tokens: getMaxTokens(messages),
-      stream: false
-    })
+    body: JSON.stringify(requestBody)
   }, timeoutSeconds, "AI 请求", {
     signal: options.signal,
     abortMessage: "AI 请求已停止。"
   });
 
-  const rawText = await response.text();
-  const data = safeParseJson(rawText);
+  let rawText = await response.text();
+  let data = safeParseJson(rawText);
 
   if (looksLikeHtml(rawText)) {
     throw new Error("AI 接口返回的是网页 HTML，不是模型接口。请确认地址是 OpenAI 兼容的 /v1/chat/completions 接口。");
@@ -819,13 +820,57 @@ async function callCodingAI(messages, options = {}) {
     throw new Error(message);
   }
 
-  const answer = extractAnswer(data, rawText);
+  let answer = extractAnswer(data, rawText);
+
+  if (!answer && shouldRetryWithoutThinking(data)) {
+    const retryBody = {
+      ...requestBody,
+      enable_thinking: false,
+      max_tokens: Math.max(getMaxTokens(messages) * 2, 3200)
+    };
+    const retryResponse = await fetchWithTimeout(apiEndpoint, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(retryBody)
+    }, timeoutSeconds, "AI 重试", {
+      signal: options.signal,
+      abortMessage: "AI 请求已停止。"
+    });
+    const retryRawText = await retryResponse.text();
+    const retryData = safeParseJson(retryRawText);
+    const retryAnswer = retryResponse.ok && !looksLikeHtml(retryRawText)
+      ? extractAnswer(retryData, retryRawText)
+      : "";
+
+    if (retryAnswer) {
+      return retryAnswer.trim();
+    }
+  }
 
   if (!answer) {
+    const choice = data && Array.isArray(data.choices) ? data.choices[0] : null;
+
+    if (choice && choice.finish_reason === "length") {
+      throw new Error("AI 输出在生成完整答案前被截断了。请提高模型输出上限，或关闭模型的深度思考模式后重试。");
+    }
+
+    if (choice && choice.message && hasReasoningOnlyResponse(choice.message)) {
+      throw new Error("模型只返回了思考过程，没有返回最终答案。请关闭模型的深度思考模式，或更换支持 Chat Completions 最终内容字段的模型。");
+    }
+
     throw new Error("AI 没有返回内容。请确认接口兼容 OpenAI Chat Completions 格式，或检查模型名称是否正确。");
   }
 
   return answer.trim();
+}
+
+function shouldRetryWithoutThinking(data) {
+  const choice = data && Array.isArray(data.choices) ? data.choices[0] : null;
+
+  return Boolean(choice && (
+    choice.finish_reason === "length" ||
+    (choice.message && hasReasoningOnlyResponse(choice.message))
+  ));
 }
 
 async function insertLeetCodeCodeIntoTab(tabId, text) {
@@ -3769,14 +3814,14 @@ function getMaxTokens(messages) {
   const text = (messages || []).map((message) => message.content || "").join("\n");
 
   if (text.includes("建议代码") || text.includes("下一步说明")) {
-    return 1200;
+    return 2400;
   }
 
   if (text.includes("检查结论") || text.includes("问题列表")) {
-    return 1800;
+    return 2800;
   }
 
-  return 1600;
+  return 2200;
 }
 
 function compactText(value, maxLength) {
@@ -3906,14 +3951,14 @@ function extractAnswer(data, rawText) {
   if (data.choices && data.choices[0]) {
     const choice = data.choices[0];
 
-    if (choice.message && typeof choice.message.content === "string") {
-      return choice.message.content;
-    }
+    const message = choice.message || choice.delta;
 
-    if (choice.message && Array.isArray(choice.message.content)) {
-      return choice.message.content
-        .map((item) => item.text || item.content || "")
-        .join("");
+    if (message) {
+      const messageContent = extractTextContent(message.content);
+
+      if (messageContent) {
+        return messageContent;
+      }
     }
 
     if (typeof choice.text === "string") {
@@ -3926,11 +3971,49 @@ function extractAnswer(data, rawText) {
   }
 
   if (Array.isArray(data.output)) {
-    return data.output
-      .flatMap((item) => item.content || [])
-      .map((item) => item.text || "")
-      .join("");
+    return extractTextContent(data.output);
+  }
+
+  return extractTextContent(data.content || data.text);
+}
+
+function extractTextContent(value) {
+  if (typeof value === "string") {
+    return value;
+  }
+
+  if (Array.isArray(value)) {
+    return value.map((item) => extractTextContent(item)).join("");
+  }
+
+  if (!value || typeof value !== "object") {
+    return "";
+  }
+
+  if (typeof value.text === "string") {
+    return value.text;
+  }
+
+  if (typeof value.value === "string") {
+    return value.value;
+  }
+
+  if (value.content !== undefined) {
+    return extractTextContent(value.content);
+  }
+
+  if (value.parts !== undefined) {
+    return extractTextContent(value.parts);
+  }
+
+  if (value.output_text !== undefined) {
+    return extractTextContent(value.output_text);
   }
 
   return "";
+}
+
+function hasReasoningOnlyResponse(message) {
+  const reasoning = message.reasoning_content || message.reasoning || message.thinking;
+  return Boolean(extractTextContent(reasoning).trim()) && !extractTextContent(message.content).trim();
 }
