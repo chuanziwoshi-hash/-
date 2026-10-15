@@ -81,6 +81,34 @@ select {
   color: #102033;
 }
 
+.privacy-settings {
+  margin: 14px 0 0;
+  padding: 10px 12px 8px;
+  border: 1px solid rgba(16, 32, 51, 0.14);
+  border-radius: 13px;
+}
+
+.privacy-settings legend {
+  padding: 0 5px;
+  color: #405022;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.check-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 7px 0;
+  font-weight: 600;
+}
+
+.check-row input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+}
+
 button {
   width: 100%;
   margin-top: 12px;
@@ -91,12 +119,6 @@ button {
   color: #231100;
   cursor: pointer;
   font-weight: 900;
-}
-
-button.launch-editor {
-  margin-top: 16px;
-  background: #1f6f68;
-  color: #f6fffb;
 }
 
 button:disabled {

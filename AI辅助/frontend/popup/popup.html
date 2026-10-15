@@ -12,11 +12,9 @@
       <span class="badge">码</span>
       <div>
         <h1>码伴 CodeMate</h1>
-        <p>在网页浮窗或独立窗口里直接写代码，按按钮获取下一段建议并检查已有错误。</p>
+        <p>在网页浮窗里直接写代码，按按钮获取下一段建议并检查已有错误。</p>
       </div>
     </section>
-
-    <button id="external-editor-btn" class="launch-editor" type="button">打开独立编辑窗口</button>
 
     <section class="settings">
       <h2>AI 接口</h2>
@@ -30,6 +28,29 @@
 
       <label for="timeout-seconds">超时时间，单位秒</label>
       <input id="timeout-seconds" type="number" min="30" max="300" value="90">
+
+      <label for="max-output-tokens">最大输出长度，单位 token</label>
+      <input id="max-output-tokens" type="number" min="512" max="65536" value="8192">
+      <p class="help">每次请求按任务分配预算，截断时可在此上限内增加一次；请勿超过所用接口支持的上限。</p>
+
+      <label for="context-window-tokens">模型上下文容量，单位 token</label>
+      <input id="context-window-tokens" type="number" min="4096" max="2000000" value="32768">
+      <p class="help">用于估算题面、代码和回答的总长度。请按接口实际容量填写；长代码会自动分段检查。</p>
+
+      <label for="token-parameter">输出长度参数</label>
+      <select id="token-parameter">
+        <option value="auto">自动适配（推荐）</option>
+        <option value="max_tokens">兼容接口：max_tokens</option>
+        <option value="max_completion_tokens">max_completion_tokens</option>
+      </select>
+
+      <label for="reasoning-mode">推理设置</label>
+      <select id="reasoning-mode">
+        <option value="default">使用接口默认设置（推荐）</option>
+        <option value="low">较低推理强度（接口需支持）</option>
+        <option value="none">关闭推理（接口需支持）</option>
+        <option value="thinking-off">关闭思考（仅支持 enable_thinking 的接口）</option>
+      </select>
 
       <label for="api-key">API Key</label>
       <input id="api-key" type="password" placeholder="OpenAI 兼容服务填写；本地服务可留空">
@@ -56,6 +77,22 @@
 
       <label for="problem-server-token">服务器 Token</label>
       <input id="problem-server-token" type="password" placeholder="需要鉴权时填写，可留空">
+
+      <fieldset class="privacy-settings">
+        <legend>发送给自定义服务器的内容</legend>
+        <label class="check-row" for="problem-server-send-page-text">
+          <input id="problem-server-send-page-text" type="checkbox" checked>
+          <span>题面正文</span>
+        </label>
+        <label class="check-row" for="problem-server-send-selection">
+          <input id="problem-server-send-selection" type="checkbox">
+          <span>网页选中文本</span>
+        </label>
+        <label class="check-row" for="problem-server-send-code">
+          <input id="problem-server-send-code" type="checkbox">
+          <span>当前编写的代码</span>
+        </label>
+      </fieldset>
 
       <button id="test-problem-server-btn" class="secondary" type="button">测试题目来源</button>
       <p id="status" class="status"></p>

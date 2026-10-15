@@ -1,5 +1,5 @@
 (function () {
-  const UI_VERSION = "codemate-v1";
+  const UI_VERSION = "codemate-v18";
   const EXISTING_HOST_ID = "coding-study-assistant-root";
   const existingHost = document.getElementById(EXISTING_HOST_ID);
 
@@ -21,18 +21,18 @@
   const MAX_AI_INSERT_SNAPSHOTS = 10;
   const SUGGESTION_SCOPE_CONFIG = {
     small: {
-      label: "只补光标处一小段",
-      note: "默认最稳，只让 AI 补光标附近几行。",
+      label: "光标附近几行（推荐）",
+      note: "建议只补光标附近几行，适合接着往下写。",
       instruction: "只补光标附近接下来要写的一小段代码，不要扩展到当前局部逻辑之外。"
     },
     block: {
-      label: "只补当前代码块",
-      note: "限制在当前 if/for/while/switch 或最近一层代码块内。",
+      label: "当前代码块",
+      note: "建议只补当前 if、for、while 等代码块内的逻辑。",
       instruction: "建议代码只能落在光标所在的当前代码块内，例如当前 if、for、while、else、switch case 或同层代码块。"
     },
     function: {
-      label: "只补当前函数",
-      note: "限制在当前函数或方法内部，不去改其他函数。",
+      label: "当前函数",
+      note: "建议只补当前函数内的逻辑，不补其他函数。",
       instruction: "建议代码只能服务于光标所在的当前函数或方法，不要重写整个类，也不要补其他函数。"
     }
   };
@@ -60,7 +60,10 @@
   let formatCodeButtonResetTimer = 0;
   let lineLocateFlashTimer = 0;
   let pendingSuggestionPreview = null;
+  let activeDiffConfirmation = null;
+  let diffResizeState = null;
   let activeAiRequest = null;
+  let codeReviewSession = null;
   let aiRequestSequence = 0;
   let draftHistory = [];
   let lastDraftHistoryCode = "";
@@ -240,15 +243,6 @@
         align-items: center;
         gap: 8px;
         flex: 0 0 auto;
-      }
-
-      .external-editor {
-        height: 36px;
-        padding: 0 12px;
-        border-radius: 13px;
-        background: #e8eadc;
-        color: #405022;
-        white-space: nowrap;
       }
 
       .body {
@@ -534,6 +528,141 @@
         min-height: 300px;
       }
 
+      .diff-dialog {
+        position: absolute;
+        inset: 0;
+        z-index: 20;
+        display: grid;
+        grid-template-rows: auto minmax(0, 1fr) auto;
+        gap: 12px;
+        padding: 16px;
+        background: rgba(255, 253, 247, 0.98);
+        color: var(--ink);
+      }
+
+      .diff-dialog[hidden] {
+        display: none;
+      }
+
+      .diff-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        cursor: move;
+        touch-action: none;
+        user-select: none;
+      }
+
+      .diff-head strong {
+        min-width: 0;
+        overflow: hidden;
+        font-size: 14px;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .diff-summary {
+        flex: 0 0 auto;
+        color: var(--muted);
+        font: 12px/1.4 "Cascadia Code", Consolas, monospace;
+      }
+
+      .diff-view {
+        min-width: 0;
+        min-height: 0;
+        overflow: auto;
+        overscroll-behavior: contain;
+        scrollbar-gutter: stable;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: #17201f;
+        color: #edf5f2;
+        font: 12px/1.55 "Cascadia Code", Consolas, monospace;
+      }
+
+      .diff-row {
+        display: grid;
+        grid-template-columns: 34px 34px 18px minmax(0, 1fr);
+        min-height: 19px;
+      }
+
+      .diff-row.added {
+        background: rgba(49, 166, 108, 0.2);
+      }
+
+      .diff-row.removed {
+        background: rgba(214, 75, 75, 0.2);
+      }
+
+      .diff-number,
+      .diff-sign {
+        color: rgba(237, 245, 242, 0.55);
+        text-align: right;
+        user-select: none;
+      }
+
+      .diff-number {
+        padding: 0 5px;
+        border-right: 1px solid rgba(237, 245, 242, 0.08);
+      }
+
+      .diff-sign {
+        padding-right: 5px;
+      }
+
+      .diff-code {
+        min-width: max-content;
+        padding-right: 10px;
+        white-space: pre;
+      }
+
+      .diff-actions {
+        display: flex;
+        justify-content: flex-end;
+        gap: 8px;
+        padding-right: 10px;
+      }
+
+      .diff-resize {
+        position: absolute;
+        width: 18px;
+        height: 18px;
+        cursor: nwse-resize;
+        touch-action: none;
+      }
+
+      .diff-resize-bottom-right {
+        right: 3px;
+        bottom: 3px;
+      }
+
+      .diff-resize-top-left {
+        left: 3px;
+        top: 3px;
+      }
+
+      .diff-resize::before {
+        content: "";
+        position: absolute;
+        width: 8px;
+        height: 8px;
+      }
+
+      .diff-resize-bottom-right::before {
+        right: 2px;
+        bottom: 2px;
+        border-right: 2px solid rgba(16, 32, 51, 0.45);
+        border-bottom: 2px solid rgba(16, 32, 51, 0.45);
+      }
+
+      .diff-resize-top-left::before {
+        left: 2px;
+        top: 2px;
+        border-left: 2px solid rgba(16, 32, 51, 0.45);
+        border-top: 2px solid rgba(16, 32, 51, 0.45);
+      }
+
       .output .line-reference {
         display: inline;
         margin: 0 1px;
@@ -648,10 +777,9 @@
       <header class="header">
         <div>
           <strong>码伴 CodeMate</strong>
-          <span>在下面直接写代码，AI 会按当前光标位置给下一段建议并检查已有错误</span>
+          <span>像搭档一样陪你写代码，在关键处提供思路，也帮你及时发现问题。</span>
         </div>
         <div class="header-actions">
-          <button class="external-editor" type="button" title="在独立窗口继续编辑">独立</button>
           <button class="close" type="button" title="关闭">X</button>
         </div>
       </header>
@@ -691,20 +819,21 @@
         <div class="actions">
           <button class="primary next" type="button">下一段该写什么</button>
           <button class="danger check" type="button">检查已有代码</button>
+          <button class="secondary retry-check" type="button" hidden>重试未完成部分</button>
           <button class="danger stop-ai" type="button" hidden>停止生成</button>
-          <button class="secondary insert-suggestion" type="button">插入建议</button>
-          <button class="secondary insert-page" type="button">插入到页面</button>
+          <button class="secondary insert-suggestion" type="button">采用建议</button>
+          <button class="secondary insert-page" type="button">写入网页编辑器</button>
           <button class="secondary explain-selection" type="button">解释选中代码</button>
-          <button class="secondary undo-insert" type="button" disabled>撤销插入</button>
+          <button class="secondary undo-insert" type="button" disabled>撤销改动</button>
         </div>
 
         <div class="scope-row">
           <select class="suggestion-scope" aria-label="建议范围">
-            <option value="small">只补光标处一小段</option>
-            <option value="block">只补当前代码块</option>
-            <option value="function">只补当前函数</option>
+            <option value="small">光标附近几行（推荐）</option>
+            <option value="block">当前代码块</option>
+            <option value="function">当前函数</option>
           </select>
-          <div class="pill scope-note">建议范围：只补光标处一小段</div>
+          <div class="pill scope-note">光标附近几行：建议只补光标附近几行，适合接着往下写。</div>
         </div>
 
         <div class="code-shell">
@@ -729,10 +858,23 @@
           </div>
         </div>
 
-        <pre class="output" tabindex="0">打开后会自动尝试同步题目。你可以直接写代码，AI 会根据当前代码、光标位置和题目上下文给出下一段建议或错误检查。</pre>
+        <pre class="output" tabindex="0">打开后会自动尝试同步题目。你可以直接写代码，码伴会根据当前代码、光标位置和题目上下文给出下一段建议或错误检查。</pre>
       </div>
 
       <div class="footer">如果配置了题目服务器，会优先向服务器发送当前页面 URL、标题、页面文本和当前代码；未配置时使用当前网页正文作为题目上下文。</div>
+      <div class="diff-dialog" role="dialog" aria-modal="true" aria-labelledby="codemate-diff-title" hidden>
+        <div class="diff-resize diff-resize-top-left" role="separator" aria-label="从左上角调整确认窗口大小"></div>
+        <div class="diff-head">
+          <strong id="codemate-diff-title" class="diff-title">确认代码变更</strong>
+          <span class="diff-summary"></span>
+        </div>
+        <div class="diff-view" aria-label="代码差异" tabindex="0"></div>
+        <div class="diff-actions">
+          <button class="secondary diff-cancel" type="button">取消</button>
+          <button class="primary diff-confirm" type="button">确认插入</button>
+        </div>
+        <div class="diff-resize diff-resize-bottom-right" role="separator" aria-label="从右下角调整确认窗口大小"></div>
+      </div>
     </section>
   `;
 
@@ -755,17 +897,25 @@
   const syncButton = shadow.querySelector(".sync");
   const nextButton = shadow.querySelector(".next");
   const checkButton = shadow.querySelector(".check");
+  const retryCheckButton = shadow.querySelector(".retry-check");
   const stopAiButton = shadow.querySelector(".stop-ai");
   const insertSuggestionButton = shadow.querySelector(".insert-suggestion");
   const insertSuggestionButtonDefaultText = insertSuggestionButton.textContent;
   const insertPageButton = shadow.querySelector(".insert-page");
   const explainSelectionButton = shadow.querySelector(".explain-selection");
   const undoInsertButton = shadow.querySelector(".undo-insert");
-  const externalEditorButton = shadow.querySelector(".external-editor");
   const suggestionScopeSelect = shadow.querySelector(".suggestion-scope");
   const suggestionScopeNote = shadow.querySelector(".scope-note");
   const draftHistorySelect = shadow.querySelector(".draft-history");
   const formatCodeButton = shadow.querySelector(".format-code");
+  const diffDialog = shadow.querySelector(".diff-dialog");
+  const diffHeader = shadow.querySelector(".diff-head");
+  const diffTitle = shadow.querySelector(".diff-title");
+  const diffSummary = shadow.querySelector(".diff-summary");
+  const diffView = shadow.querySelector(".diff-view");
+  const diffCancelButton = shadow.querySelector(".diff-cancel");
+  const diffConfirmButton = shadow.querySelector(".diff-confirm");
+  const diffResizeHandles = Array.from(shadow.querySelectorAll(".diff-resize"));
 
   updateSuggestionScopeNote();
   updateUndoInsertButton();
@@ -782,6 +932,69 @@
 
   function sanitizeText(value) {
     return String(value || "").replace(/\u0000/g, "").trim();
+  }
+
+  function showDiffConfirmation(title, beforeText, afterText) {
+    if (activeDiffConfirmation) {
+      activeDiffConfirmation(false);
+    }
+
+    const diff = window.CodingAssistantCore.buildTextDiff(beforeText, afterText);
+    diffTitle.textContent = title || "确认代码变更";
+    diffSummary.textContent = "+" + diff.added + "  -" + diff.removed;
+    diffView.replaceChildren();
+    const fragment = document.createDocumentFragment();
+
+    for (const line of diff.lines) {
+      const row = document.createElement("div");
+      const oldNumber = document.createElement("span");
+      const newNumber = document.createElement("span");
+      const sign = document.createElement("span");
+      const code = document.createElement("span");
+
+      row.className = "diff-row " + line.type;
+      oldNumber.className = "diff-number";
+      newNumber.className = "diff-number";
+      sign.className = "diff-sign";
+      code.className = "diff-code";
+      oldNumber.textContent = line.oldNumber == null ? "" : String(line.oldNumber);
+      newNumber.textContent = line.newNumber == null ? "" : String(line.newNumber);
+      sign.textContent = line.type === "added" ? "+" : line.type === "removed" ? "-" : "";
+      code.textContent = line.text;
+      row.append(oldNumber, newNumber, sign, code);
+      fragment.appendChild(row);
+    }
+
+    if (diff.lines.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "diff-row context";
+      const code = document.createElement("span");
+      code.className = "diff-code";
+      code.style.gridColumn = "1 / -1";
+      code.textContent = "没有检测到代码变化";
+      empty.appendChild(code);
+      fragment.appendChild(empty);
+    }
+
+    diffView.appendChild(fragment);
+    diffDialog.hidden = false;
+    diffView.scrollTop = 0;
+    diffView.scrollLeft = 0;
+    diffConfirmButton.focus();
+
+    return new Promise((resolve) => {
+      activeDiffConfirmation = (confirmed) => {
+        activeDiffConfirmation = null;
+        diffDialog.hidden = true;
+        resolve(Boolean(confirmed));
+      };
+    });
+  }
+
+  function closeDiffConfirmation(confirmed) {
+    if (activeDiffConfirmation) {
+      activeDiffConfirmation(confirmed);
+    }
   }
 
   function isExtensionContextAvailable() {
@@ -878,7 +1091,7 @@
     }
 
     const scope = getSelectedSuggestionScope();
-    suggestionScopeNote.textContent = "建议范围：" + SUGGESTION_SCOPE_CONFIG[scope].note;
+    suggestionScopeNote.textContent = SUGGESTION_SCOPE_CONFIG[scope].note + " 仅影响“下一段该写什么”；生成后需确认插入，不会自动改代码。";
   }
 
   function syncCodeEditorMetrics() {
@@ -1119,8 +1332,8 @@
     const latestSnapshot = aiInsertSnapshots[aiInsertSnapshots.length - 1];
     undoInsertButton.disabled = !latestSnapshot;
     undoInsertButton.title = latestSnapshot
-      ? "回退上一次" + latestSnapshot.label
-      : "暂无可回退的 AI 插入";
+      ? "撤销上一次" + latestSnapshot.label
+      : "暂无可撤销的代码改动";
   }
 
   function updateActionButtonStates() {
@@ -1157,6 +1370,10 @@
       return;
     }
 
+    if (!snapshot.assistantPresentation) {
+      snapshot.assistantPresentation = captureAssistantPresentation();
+    }
+
     aiInsertSnapshots.push(snapshot);
 
     if (aiInsertSnapshots.length > MAX_AI_INSERT_SNAPSHOTS) {
@@ -1171,18 +1388,39 @@
     updateUndoInsertButton();
 
     if (!snapshot) {
-      output.textContent = "暂无可撤销的 AI 插入。";
+      output.textContent = "暂无可撤销的代码改动。";
       return;
     }
 
     try {
       await restoreAiInsertSnapshot(snapshot);
-      output.textContent = "已撤销上一次" + snapshot.label + "。";
+      restoreAssistantPresentation(snapshot, "已撤销“" + snapshot.label + "”产生的改动。");
     } catch (error) {
       aiInsertSnapshots.push(snapshot);
       updateUndoInsertButton();
-      output.textContent = "撤销插入失败：" + (error.message || String(error));
+      output.textContent = "撤销改动失败：" + (error.message || String(error));
     }
+  }
+
+  function captureAssistantPresentation() {
+    return {
+      outputText: output.textContent || "",
+      readingMode: panel.classList.contains("reading-mode"),
+      lastSuggestion: lastSuggestion || ""
+    };
+  }
+
+  function restoreAssistantPresentation(snapshot, statusMessage) {
+    const state = snapshot && snapshot.assistantPresentation;
+    const restoredText = state && typeof state.outputText === "string" ? state.outputText : "";
+    const combinedText = window.CodingAssistantCore.prependStatusMessage(statusMessage, restoredText);
+
+    renderOutputText(combinedText, { linkLineReferences: true });
+    lastSuggestion = state && typeof state.lastSuggestion === "string" ? state.lastSuggestion : "";
+    panel.classList.toggle("reading-mode", Boolean(state && state.readingMode));
+    output.scrollTop = 0;
+    updateActionButtonStates();
+    saveDraft();
   }
 
   async function restoreAiInsertSnapshot(snapshot) {
@@ -1198,6 +1436,11 @@
 
     if (snapshot.type === "page-contenteditable") {
       restorePageContentEditableSnapshot(snapshot);
+      return;
+    }
+
+    if (snapshot.type === "page-codemirror") {
+      await restoreCodeMirrorInsertSnapshot(snapshot);
       return;
     }
 
@@ -1217,6 +1460,7 @@
       selectionStart: getSelectionStart(codeInput),
       selectionEnd: getSelectionEnd(codeInput),
       scrollTop: codeInput.scrollTop,
+      assistantPresentation: captureAssistantPresentation(),
       savedAt: Date.now()
     };
   }
@@ -1232,9 +1476,27 @@
     codeInput.focus();
   }
 
-  function createPageInsertSnapshot(target, label) {
+  async function createPageInsertSnapshot(target, label) {
     if (!isEditable(target) || shadow.contains(target)) {
       return null;
+    }
+
+    if (isCodeMirrorContentEditableTarget(target)) {
+      target.focus();
+      const response = await sendRuntimeMessage({
+        type: "CAPTURE_CODEMIRROR_CODE_SNAPSHOT"
+      });
+
+      return {
+        type: "page-codemirror",
+        label,
+        text: response.text || "",
+        anchor: response.anchor || 0,
+        head: response.head || 0,
+        method: response.method || "codemirror-state",
+        pageUrl: location.href,
+        savedAt: Date.now()
+      };
     }
 
     if ("value" in target) {
@@ -1256,6 +1518,8 @@
       label,
       target,
       html: target.innerHTML,
+      text: readPageContentEditableText(target),
+      editorKind: isCodeMirrorContentEditableTarget(target) ? "codemirror" : "contenteditable",
       selection: getContentEditableSelectionOffsets(target),
       scrollTop: target.scrollTop || 0,
       pageUrl: location.href,
@@ -1291,10 +1555,59 @@
     assertSnapshotTargetAvailable(target);
 
     target.focus();
-    target.innerHTML = snapshot.html || "";
+    restorePageContentEditableValue(target, snapshot);
     target.scrollTop = snapshot.scrollTop || 0;
     restoreContentEditableSelectionOffsets(target, snapshot.selection);
     dispatchEditableChange(target);
+  }
+
+  function isCodeMirrorContentEditableTarget(target) {
+    return Boolean(target && target.closest && target.closest(".cm-editor, .CodeMirror"));
+  }
+
+  function readPageContentEditableText(target) {
+    const codeMirrorLines = target && target.querySelectorAll
+      ? Array.from(target.querySelectorAll(".cm-line"))
+      : [];
+
+    if (codeMirrorLines.length > 0) {
+      return codeMirrorLines.map((line) => line.textContent || "").join("\n");
+    }
+
+    return target && (target.innerText || target.textContent) || "";
+  }
+
+  function restorePageContentEditableValue(target, snapshot) {
+    if (Object.prototype.hasOwnProperty.call(snapshot, "html")) {
+      target.innerHTML = snapshot.html || "";
+      return;
+    }
+
+    target.textContent = snapshot.text || "";
+  }
+
+  async function restoreCodeMirrorInsertSnapshot(snapshot) {
+    assertSnapshotPageStillCurrent(snapshot);
+    await sendRuntimeMessage({
+      type: "RESTORE_CODEMIRROR_CODE_SNAPSHOT",
+      snapshot: {
+        text: snapshot.text || "",
+        anchor: snapshot.anchor || 0,
+        head: snapshot.head || 0
+      }
+    });
+  }
+
+  async function insertCodeIntoCodeMirrorSnapshot(snapshot, text) {
+    return await sendRuntimeMessage({
+      type: "INSERT_CODEMIRROR_CODE",
+      payload: {
+        beforeText: snapshot.text || "",
+        text: String(text || ""),
+        anchor: snapshot.anchor || 0,
+        head: snapshot.head || 0
+      }
+    });
   }
 
   async function createLeetCodeInsertSnapshot(label) {
@@ -3157,12 +3470,14 @@
           const lastError = getRuntimeLastErrorMessage();
 
           if (lastError) {
-            reject(new Error(lastError));
+            reject(Object.assign(new Error(lastError), { code: "NETWORK" }));
             return;
           }
 
           if (!response || !response.ok) {
-            reject(new Error(response && response.error ? response.error : "请求失败"));
+            reject(Object.assign(new Error(response && response.error ? response.error : "请求失败"), {
+              code: response && response.code, status: response && response.status
+            }));
             return;
           }
 
@@ -3191,7 +3506,10 @@
 
       const problem = window.CodingAssistantCore.normalizeProblemPayload(response.problem || response.data);
       lastProblemContext = problem || buildLocalProblemContextV3();
-      lastServerSource = response.source || (response.fromServer ? "服务器" : "页面");
+      const responseSource = response.source || (response.fromServer ? "服务器" : "页面");
+      lastServerSource = response.meta && response.meta.cached
+        ? responseSource + "（缓存）"
+        : responseSource;
       problemInput.value = lastProblemContext;
       statusText.textContent = "题目上下文：已同步 " + lastProblemContext.length + " 字";
       sourceText.textContent = "来源：" + lastServerSource;
@@ -3204,32 +3522,7 @@
       output.textContent = "同步服务器失败：" + (error.message || String(error)) + "\n\n已回退为当前网页正文。";
     } finally {
       syncButton.disabled = false;
-    }
-  }
-
-  async function openExternalEditor(event) {
-    if (event) {
-      event.preventDefault();
-      event.stopPropagation();
-    }
-
-    if (externalEditorButton) {
-      externalEditorButton.disabled = true;
-    }
-
-    try {
-      await saveDraft({ recordHistory: true, label: "打开独立窗口前" });
-      await sendRuntimeMessage({
-        type: "OPEN_EXTERNAL_EDITOR",
-        payload: getPagePayloadV3()
-      });
-      setPanelOpen(false);
-    } catch (error) {
-      output.textContent = "打开独立窗口失败：" + (error.message || String(error));
-    } finally {
-      if (externalEditorButton) {
-        externalEditorButton.disabled = false;
-      }
+      notifyReviewContextChange();
     }
   }
 
@@ -3705,6 +3998,7 @@
     }
     stopAiButton.hidden = !running;
     stopAiButton.disabled = !running;
+    updateReviewRetryButton();
 
     if (!running) {
       updateActionButtonStates();
@@ -3733,13 +4027,113 @@
 
     sendRuntimeMessage({
       type: "CANCEL_CODING_AI",
-      requestId: request.id
+      requestId: request.childId || request.id
     }).catch(() => {
       // The original AI request will still resolve or reject and restore the UI.
     });
   }
 
+  function isReviewOutdated(session = codeReviewSession) {
+    return Boolean(session && (session.originalCode !== codeInput.value ||
+      session.problem !== (sanitizeText(problemInput.value) || lastProblemContext || buildLocalProblemContextV3()) ||
+      session.selectedLanguage !== languageSelect.value));
+  }
+
+  function updateReviewRetryButton() {
+    retryCheckButton.hidden = !codeReviewSession || window.CodingCodeReview.isComplete(codeReviewSession) || Boolean(activeAiRequest);
+    retryCheckButton.disabled = Boolean(activeAiRequest) || isReviewOutdated();
+    retryCheckButton.title = isReviewOutdated() ? "内容已变化，请点击“检查已有代码”重新检查当前版本" : "保留已完成结果，只重试未完成部分";
+  }
+
+  function renderCodeReview() {
+    if (!codeReviewSession) return;
+    const oldScroll = output.scrollTop;
+    renderOutputText(window.CodingCodeReview.format(codeReviewSession, isReviewOutdated()), { linkLineReferences: !isReviewOutdated() });
+    output.scrollTop = oldScroll;
+    updateReviewRetryButton();
+  }
+
+  function notifyReviewContextChange() {
+    updateReviewRetryButton();
+    if (codeReviewSession && (activeAiRequest && activeAiRequest.mode === "check" || output.dataset.codeReview === "true")) renderCodeReview();
+  }
+
+  function loadReviewSettings() {
+    return new Promise((resolve, reject) => {
+      try {
+        chrome.storage.sync.get({ maxOutputTokens: 8192, contextWindowTokens: 32768 }, (settings) => {
+          const error = getRuntimeLastErrorMessage();
+          if (error) reject(new Error(error));
+          else resolve(settings);
+        });
+      } catch (error) { reject(error); }
+    });
+  }
+
+  async function runCodeReview(resume) {
+    if (activeAiRequest) return;
+    clearSuggestionPreview();
+    const request = createAiRequestState("check");
+    activeAiRequest = request;
+    setAiRequestRunning(true);
+    lastSuggestion = "";
+    if (!resume) {
+      codeReviewSession = null;
+      output.dataset.codeReview = "false";
+      output.textContent = "码伴正在准备代码检查...";
+    }
+    try {
+      await syncCurrentProblemPageLanguage({ silent: true });
+      const settings = await loadReviewSettings();
+      if (request.canceled) throw Object.assign(new Error("已停止检查。"), { code: "CANCELED" });
+      if (resume) {
+        if (!codeReviewSession || isReviewOutdated()) throw new Error("内容已变化，请点击“检查已有代码”重新检查当前版本。");
+        const config = window.CodingAiBudget.normalize(settings);
+        if (config.contextWindowTokens !== codeReviewSession.settings.contextWindowTokens) throw new Error("上下文容量已变化，请重新检查当前代码以调整分段。");
+        codeReviewSession.settings = config;
+      } else {
+        codeReviewSession = window.CodingCodeReview.createSession({
+          code: codeInput.value,
+          problem: sanitizeText(problemInput.value) || lastProblemContext || buildLocalProblemContextV3(),
+          language: window.CodingAssistantCore.detectLanguage(codeInput.value, languageSelect.value), settings
+        });
+        codeReviewSession.selectedLanguage = languageSelect.value;
+      }
+      output.dataset.codeReview = "true";
+      enterReadingMode();
+      await window.CodingCodeReview.run(codeReviewSession, {
+        isCanceled: () => request.canceled,
+        onProgress: renderCodeReview,
+        request: async (messages, taskType) => {
+          if (request.canceled) throw Object.assign(new Error("已停止检查。"), { code: "CANCELED" });
+          request.childSequence = (request.childSequence || 0) + 1;
+          request.childId = request.id + "/" + request.childSequence;
+          try {
+            const response = await sendRuntimeMessage({ type: "CALL_CODING_AI", requestId: request.childId, taskType, messages });
+            return response.answer;
+          } finally { request.childId = ""; }
+        }
+      });
+      renderCodeReview();
+    } catch (error) {
+      if (request.canceled) {
+        if (codeReviewSession) { codeReviewSession.stopped = true; renderCodeReview(); }
+        else output.textContent = "已停止检查。";
+      } else {
+        output.dataset.codeReview = "false";
+        output.textContent = error.message || String(error);
+      }
+    } finally {
+      activeAiRequest = null;
+      setAiRequestRunning(false);
+    }
+  }
+
   async function runAI(mode) {
+    if (mode === "check") {
+      await runCodeReview(false);
+      return;
+    }
     clearSuggestionPreview();
     if (activeAiRequest) {
       output.textContent = "已有 AI 请求正在运行，可以先点击“停止生成”。";
@@ -3747,6 +4141,9 @@
     }
 
     await syncCurrentProblemPageLanguage({ silent: true });
+    if (activeAiRequest) {
+      return;
+    }
 
     const problem = sanitizeText(problemInput.value) || lastProblemContext || buildLocalProblemContextV3();
     const code = codeInput.value;
@@ -3779,8 +4176,10 @@
       return;
     }
 
+    const previousOutputText = output.textContent || "";
     const request = createAiRequestState(mode);
     activeAiRequest = request;
+    output.dataset.codeReview = "false";
     setAiRequestRunning(true);
     output.textContent = getAiModeLoadingText(mode);
 
@@ -3804,12 +4203,13 @@
         suggestionScopeLabel: scopeDetails && scopeDetails.label,
         suggestionScopeInstruction: scopeDetails && scopeDetails.instruction,
         suggestionScopeContext: scopeDetails && scopeDetails.context,
-        lastResult: output.textContent
+        lastResult: previousOutputText
       });
 
       const response = await sendRuntimeMessage({
         type: "CALL_CODING_AI",
         requestId: request.id,
+        taskType: mode,
         messages
       });
 
@@ -3818,11 +4218,16 @@
         return;
       }
 
-      renderOutputText(response.answer, { linkLineReferences: true });
+      const answer = String(response.answer || "").trim();
+      if (!answer) {
+        throw new Error("未收到有效的回答，请再次点击重试。");
+      }
+
+      renderOutputText(answer, { linkLineReferences: true });
       enterReadingMode();
 
       if (mode === "next") {
-        lastSuggestion = window.CodingAssistantCore.extractSuggestedCode(response.answer);
+        lastSuggestion = window.CodingAssistantCore.extractSuggestedCode(answer);
       } else {
         lastSuggestion = "";
       }
@@ -3866,9 +4271,9 @@
     setProblemExpanded(!panel.classList.contains("problem-expanded"));
   }
 
-  function insertSuggestionAtCursor() {
+  async function insertSuggestionAtCursor() {
     if (pendingSuggestionPreview) {
-      confirmSuggestionPreview();
+      await reviewSuggestionPreview();
       return;
     }
 
@@ -3882,9 +4287,10 @@
     const start = typeof codeInput.selectionStart === "number" ? codeInput.selectionStart : codeInput.value.length;
     const end = typeof codeInput.selectionEnd === "number" ? codeInput.selectionEnd : codeInput.value.length;
     const insertion = buildSuggestionInsertion(suggestion, start, end);
-    const snapshot = createAssistantCodeSnapshot("插入建议");
+    const snapshot = createAssistantCodeSnapshot("采用建议");
 
     previewSuggestionInsertion(suggestion, insertion, snapshot);
+    await reviewSuggestionPreview();
   }
 
   function previewSuggestionInsertion(suggestion, insertion, snapshot) {
@@ -3898,10 +4304,41 @@
     };
 
     insertSuggestionButton.disabled = false;
-    insertSuggestionButton.textContent = "确认插入";
-    insertSuggestionButton.title = "已高亮插入位置，再点一次确认插入";
+    insertSuggestionButton.textContent = "查看差异";
+    insertSuggestionButton.title = "查看插入前后的代码差异";
     codeEditor.classList.add("suggestion-preview");
     focusCodeEditorAtInsertion(insertion);
+  }
+
+  async function reviewSuggestionPreview() {
+    const preview = pendingSuggestionPreview;
+
+    if (!preview) {
+      return;
+    }
+
+    if (codeInput.value !== preview.code) {
+      clearSuggestionPreview();
+      output.textContent = "代码已发生变化，请重新选择插入位置。";
+      return;
+    }
+
+    const afterText = window.CodingAssistantCore.applyTextChange(
+      preview.code,
+      preview.insertion.start,
+      preview.insertion.end,
+      preview.insertion.text
+    );
+    const confirmed = await showDiffConfirmation("确认采用建议", preview.code, afterText);
+
+    if (confirmed) {
+      confirmSuggestionPreview();
+      return;
+    }
+
+    clearSuggestionPreview();
+    restoreAssistantPresentation(preview.snapshot, "已取消采用建议，代码未修改。");
+    focusCodeEditorAtInsertion(preview.insertion);
   }
 
   function confirmSuggestionPreview() {
@@ -3980,7 +4417,8 @@
 
   function formatCodeInEditor() {
     clearSuggestionPreview();
-    const rawCode = normalizeCodeForFormatting(codeInput.value);
+    const originalCode = codeInput.value;
+    const rawCode = normalizeCodeForFormatting(originalCode);
 
     if (!rawCode.trim()) {
       flashFormatButton("无代码");
@@ -3988,22 +4426,31 @@
     }
 
     const language = getFormattingLanguage(rawCode);
-    const formattedCode = formatCodeText(rawCode, language);
+    const formattedCode = window.CodingAssistantCore.formatCode(rawCode, language);
     const nextCode = formattedCode || rawCode;
-    recordDraftHistory(Date.now(), "格式化前");
-    const selectionStart = typeof codeInput.selectionStart === "number" ? codeInput.selectionStart : nextCode.length;
-    const selectionEnd = typeof codeInput.selectionEnd === "number" ? codeInput.selectionEnd : nextCode.length;
+    const selectionStart = typeof codeInput.selectionStart === "number" ? codeInput.selectionStart : rawCode.length;
+    const selectionEnd = typeof codeInput.selectionEnd === "number" ? codeInput.selectionEnd : rawCode.length;
     const scrollTop = codeInput.scrollTop;
+
+    if (nextCode === rawCode) {
+      flashFormatButton("无需调整");
+      codeInput.focus();
+      return;
+    }
+
+    recordDraftHistory(Date.now(), "格式化前");
+    const nextSelectionStart = window.CodingAssistantCore.mapFormattedOffset(rawCode, nextCode, selectionStart);
+    const nextSelectionEnd = window.CodingAssistantCore.mapFormattedOffset(rawCode, nextCode, selectionEnd);
 
     codeInput.value = nextCode;
     codeInput.setSelectionRange(
-      Math.min(selectionStart, nextCode.length),
-      Math.min(selectionEnd, nextCode.length)
+      Math.min(nextSelectionStart, nextCode.length),
+      Math.min(nextSelectionEnd, nextCode.length)
     );
     codeInput.scrollTop = scrollTop;
     codeInput.dispatchEvent(new Event("input", { bubbles: true }));
     codeInput.focus();
-    flashFormatButton(nextCode === rawCode ? "已整理" : "已格式化");
+    flashFormatButton("已格式化");
   }
 
   function flashFormatButton(text) {
@@ -4093,137 +4540,6 @@
     return detected;
   }
 
-  function formatCodeText(code, language) {
-    const unit = getIndentUnitForLanguage(language);
-
-    if (language === "python") {
-      return formatPythonCode(code, unit);
-    }
-
-    if (isBraceFormattingLanguage(language)) {
-      return formatBraceLanguageCode(code, unit);
-    }
-
-    return cleanupLooseCode(code, unit);
-  }
-
-  function isBraceFormattingLanguage(language) {
-    return new Set([
-      "c",
-      "cpp98",
-      "cpp11",
-      "cpp14",
-      "cpp17",
-      "cpp20",
-      "csharp",
-      "css",
-      "go",
-      "java8",
-      "java11",
-      "java17",
-      "javascript",
-      "typescript"
-    ]).has(String(language || "").toLowerCase());
-  }
-
-  function formatBraceLanguageCode(code, unit) {
-    const lines = normalizeCodeForFormatting(code).split("\n");
-    const result = [];
-    const state = { inBlockComment: false };
-    let indentLevel = 0;
-    let previousWasBlank = false;
-
-    for (const rawLine of lines) {
-      const trimmedRight = rawLine.replace(/\t/g, unit).replace(/[ \t]+$/g, "");
-      const trimmed = trimmedRight.trim();
-
-      if (!trimmed) {
-        if (!previousWasBlank && result.length > 0) {
-          result.push("");
-          previousWasBlank = true;
-        }
-        continue;
-      }
-
-      const structureLine = stripStructuralNoise(trimmedRight, state);
-      let currentIndent = indentLevel;
-
-      if (startsWithClosingBrace(trimmed)) {
-        currentIndent -= 1;
-      }
-
-      if (isAccessModifierLine(trimmed) || isCaseLabelLine(trimmed)) {
-        currentIndent -= 1;
-      }
-
-      if (isPreprocessorDirectiveLine(trimmed)) {
-        currentIndent = 0;
-      }
-
-      currentIndent = Math.max(0, currentIndent);
-      result.push(unit.repeat(currentIndent) + trimmed);
-      previousWasBlank = false;
-
-      const braceDelta = countOccurrences(structureLine, "{") - countOccurrences(structureLine, "}");
-      indentLevel = Math.max(0, indentLevel + braceDelta);
-
-      if (isAccessModifierLine(trimmed) || isCaseLabelLine(trimmed)) {
-        indentLevel = Math.max(indentLevel, currentIndent + 1);
-      }
-    }
-
-    return finalizeFormattedCode(result.join("\n"));
-  }
-
-  function formatPythonCode(code, unit) {
-    const lines = normalizeCodeForFormatting(code).split("\n");
-    const result = [];
-    let indentLevel = 0;
-    let previousWasBlank = false;
-
-    for (const rawLine of lines) {
-      const trimmedRight = rawLine.replace(/\t/g, unit).replace(/[ \t]+$/g, "");
-      const trimmed = trimmedRight.trim();
-
-      if (!trimmed) {
-        if (!previousWasBlank && result.length > 0) {
-          result.push("");
-          previousWasBlank = true;
-        }
-        continue;
-      }
-
-      let currentIndent = indentLevel;
-
-      if (/^(elif\b|else\s*:|except\b|finally\s*:)/.test(trimmed)) {
-        currentIndent = Math.max(0, currentIndent - 1);
-      }
-
-      result.push(unit.repeat(currentIndent) + trimmed);
-      previousWasBlank = false;
-      indentLevel = currentIndent;
-
-      if (/:\s*(#.*)?$/.test(trimmed)) {
-        indentLevel += 1;
-      }
-    }
-
-    return finalizeFormattedCode(result.join("\n"));
-  }
-
-  function cleanupLooseCode(code, unit) {
-    const lines = normalizeCodeForFormatting(code)
-      .split("\n")
-      .map((line) => line.replace(/\t/g, unit).replace(/[ \t]+$/g, ""));
-
-    return finalizeFormattedCode(lines.join("\n"));
-  }
-
-  function finalizeFormattedCode(text) {
-    return stripCodeEdgeBlankLines(String(text || ""))
-      .replace(/\n{3,}/g, "\n\n");
-  }
-
   function stripCodeEdgeBlankLines(text) {
     return String(text || "")
       .replace(/^(?:[ \t]*\n)+/, "")
@@ -4234,82 +4550,6 @@
     return String(value || "")
       .replace(/\u0000/g, "")
       .replace(/\r\n?/g, "\n");
-  }
-
-  function stripStructuralNoise(line, state) {
-    let result = "";
-    let quote = "";
-    let escaped = false;
-
-    for (let index = 0; index < line.length; index += 1) {
-      const char = line[index];
-      const next = line[index + 1];
-
-      if (state.inBlockComment) {
-        if (char === "*" && next === "/") {
-          state.inBlockComment = false;
-          index += 1;
-        }
-        continue;
-      }
-
-      if (quote) {
-        if (escaped) {
-          escaped = false;
-          continue;
-        }
-
-        if (char === "\\") {
-          escaped = true;
-          continue;
-        }
-
-        if (char === quote) {
-          quote = "";
-        }
-
-        continue;
-      }
-
-      if (char === "/" && next === "*") {
-        state.inBlockComment = true;
-        index += 1;
-        continue;
-      }
-
-      if (char === "/" && next === "/") {
-        break;
-      }
-
-      if (char === "\"" || char === "'" || char === "`") {
-        quote = char;
-        continue;
-      }
-
-      result += char;
-    }
-
-    return result;
-  }
-
-  function countOccurrences(value, needle) {
-    return Array.from(String(value || "")).reduce((count, char) => count + (char === needle ? 1 : 0), 0);
-  }
-
-  function startsWithClosingBrace(line) {
-    return /^}/.test(line);
-  }
-
-  function isAccessModifierLine(line) {
-    return /^(public|private|protected)\s*:\s*$/.test(line);
-  }
-
-  function isCaseLabelLine(line) {
-    return /^(case\b[\s\S]*:|default\s*:)\s*$/.test(line);
-  }
-
-  function isPreprocessorDirectiveLine(line) {
-    return /^#\s*[A-Za-z_]/.test(line);
   }
 
   function buildSuggestionInsertion(suggestion, start, end) {
@@ -4635,146 +4875,165 @@
       return;
     }
 
-    if (isLeetCodeProblemPage()) {
-      let snapshot = null;
+    try {
+      const plan = await createPageInsertionPlan(target, text, "写入网页编辑器", languageSelect.value);
+      const confirmed = await showDiffConfirmation("确认写入网页编辑器", plan.beforeText, plan.afterText);
 
-      try {
-        snapshot = await createLeetCodeInsertSnapshot("插入到页面");
-      } catch (error) {
-        output.textContent = "保存 LeetCode 插入前快照失败，已取消插入：" + (error.message || String(error));
+      if (!confirmed) {
+        restoreAssistantPresentation(plan.snapshot, "已取消插入，页面代码未修改。");
         return;
       }
 
-      const insertResult = await insertCodeIntoLeetCodeEditor(text);
+      const result = await executePageInsertionPlan(plan);
 
-      if (insertResult === "inserted") {
-        pushAiInsertSnapshot(snapshot);
-        output.textContent = "已插入到 LeetCode 编辑器，可点击“撤销插入”回退。";
-        return;
+      if (result.inserted) {
+        output.textContent = "已写入网页编辑器，可点击“撤销改动”恢复。";
       }
-
-      if (insertResult === "copied") {
-        return;
-      }
-
-      if (!output.textContent.startsWith("LeetCode insert failed:")) {
-        output.textContent = "LeetCode insert failed: code editor was not found or did not accept input.";
-      }
-      return;
+    } catch (error) {
+      output.textContent = "写入网页编辑器失败：" + (error.message || String(error));
     }
-
-    if (!isEditable(target) || shadow.contains(target)) {
-      output.textContent = "没有可插入的位置。请先点一下网页里的代码输入框，再回到这里点击“插入到页面”。";
-      return;
-    }
-
-    const snapshot = createPageInsertSnapshot(target, "插入到页面");
-
-    if (!snapshot) {
-      output.textContent = "保存插入前快照失败，已取消插入。";
-      return;
-    }
-
-    if ("value" in target) {
-      const start = typeof target.selectionStart === "number" ? target.selectionStart : target.value.length;
-      const end = typeof target.selectionEnd === "number" ? target.selectionEnd : target.value.length;
-      try {
-        target.setRangeText(text, start, end, "end");
-        target.dispatchEvent(new Event("input", { bubbles: true }));
-        target.focus();
-        pushAiInsertSnapshot(snapshot);
-        output.textContent = "已插入到页面，可点击“撤销插入”回退。";
-      } catch (error) {
-        output.textContent = "插入到页面失败：" + (error.message || String(error));
-      }
-      return;
-    }
-
-    target.focus();
-    if (!document.execCommand("insertText", false, text)) {
-      output.textContent = "插入到页面失败：目标编辑器没有接受输入。";
-      return;
-    }
-
-    pushAiInsertSnapshot(snapshot);
-    output.textContent = "已插入到页面，可点击“撤销插入”回退。";
   }
 
-  async function insertExternalEditorCodeIntoPage(text) {
+  async function createPageInsertionPlan(target, text, label, languageHint) {
     const preparedText = String(text || "");
-    const target = lastEditable || document.activeElement;
+    const language = languageHint && languageHint !== "auto"
+      ? languageHint
+      : getFormattingLanguage(preparedText);
+    const pageInsertText = window.CodingAssistantCore.stripCodeComments(preparedText, language);
+    let snapshot = null;
 
-    if (!preparedText) {
-      throw new Error("No code to insert.");
+    if (!pageInsertText.trim()) {
+      throw new Error("移除注释后没有可写入网页编辑器的代码。");
     }
 
     if (isLeetCodeProblemPage()) {
-      let snapshot = null;
-
-      try {
-        snapshot = await createLeetCodeInsertSnapshot("独立窗口插入");
-      } catch (error) {
-        throw new Error("保存 LeetCode 插入前快照失败，已取消插入：" + (error.message || String(error)));
-      }
-
-      const insertResult = await insertCodeIntoLeetCodeEditor(preparedText);
-
-      if (insertResult === "inserted") {
-        pushAiInsertSnapshot(snapshot);
-        output.textContent = "独立窗口代码已插入到 LeetCode 编辑器，可点击“撤销插入”回退。";
-        return {
-          inserted: true,
-          method: "leetcode"
-        };
-      }
-
-      if (insertResult === "copied") {
-        return {
-          inserted: false,
-          method: "clipboard"
-        };
-      }
-
-      throw new Error(output.textContent || "LeetCode editor did not accept input.");
+      snapshot = await createLeetCodeInsertSnapshot(label);
+      snapshot.assistantPresentation = captureAssistantPresentation();
+      const replacement = prepareLeetCodeInsertText(pageInsertText);
+      return {
+        target: null,
+        text: replacement,
+        snapshot,
+        beforeText: snapshot.text || "",
+        afterText: replacement
+      };
     }
 
     if (!isEditable(target) || shadow.contains(target)) {
-      throw new Error("没有可插入的位置。请先点击网页里的代码输入框，再从独立窗口插入。");
+      throw new Error("没有可插入的位置。请先点一下网页里的代码输入框，再重新插入。");
     }
 
-    const snapshot = createPageInsertSnapshot(target, "独立窗口插入");
+    snapshot = await createPageInsertSnapshot(target, label);
 
     if (!snapshot) {
       throw new Error("保存插入前快照失败，已取消插入。");
     }
 
-    if ("value" in target) {
-      const start = typeof target.selectionStart === "number" ? target.selectionStart : target.value.length;
-      const end = typeof target.selectionEnd === "number" ? target.selectionEnd : target.value.length;
-      target.setRangeText(preparedText, start, end, "end");
-      target.dispatchEvent(new Event("input", { bubbles: true }));
-      target.focus();
-      pushAiInsertSnapshot(snapshot);
-      output.textContent = "独立窗口代码已插入到页面，可点击“撤销插入”回退。";
+    snapshot.assistantPresentation = captureAssistantPresentation();
 
+    if (snapshot.type === "page-contenteditable" && !snapshot.selection) {
+      throw new Error("没有读取到编辑器选区。请先点击要插入的位置，再重新生成差异。");
+    }
+
+    const beforeText = getPageSnapshotText(snapshot);
+    const range = getPageSnapshotRange(snapshot, beforeText.length);
+
+    return {
+      target,
+      text: pageInsertText,
+      snapshot,
+      beforeText,
+      afterText: window.CodingAssistantCore.applyTextChange(
+        beforeText,
+        range.start,
+        range.end,
+        pageInsertText
+      )
+    };
+  }
+
+  function getPageSnapshotText(snapshot) {
+    return snapshot.type === "page-input" ? String(snapshot.value || "") : String(snapshot.text || "");
+  }
+
+  function getPageSnapshotRange(snapshot, textLength) {
+    if (snapshot.type === "page-codemirror") {
       return {
-        inserted: true,
-        method: "value"
+        start: Math.min(snapshot.anchor || 0, snapshot.head || 0),
+        end: Math.max(snapshot.anchor || 0, snapshot.head || 0)
       };
     }
 
+    if (snapshot.type === "page-input") {
+      return {
+        start: Math.min(snapshot.selectionStart || 0, snapshot.selectionEnd || 0),
+        end: Math.max(snapshot.selectionStart || 0, snapshot.selectionEnd || 0)
+      };
+    }
+
+    if (snapshot.type === "page-contenteditable" && snapshot.selection) {
+      return {
+        start: Math.min(snapshot.selection.start || 0, snapshot.selection.end || 0),
+        end: Math.max(snapshot.selection.start || 0, snapshot.selection.end || 0)
+      };
+    }
+
+    return { start: textLength, end: textLength };
+  }
+
+  async function executePageInsertionPlan(plan) {
+    const snapshot = plan.snapshot;
+    const target = plan.target;
+
+    assertSnapshotPageStillCurrent(snapshot);
+
+    if (snapshot.type === "leetcode") {
+      const current = await createLeetCodeInsertSnapshot(snapshot.label);
+      if (current.text !== snapshot.text) {
+        throw new Error("确认期间编辑器内容已变化，请重新生成差异。");
+      }
+
+      const insertResult = await insertCodeIntoLeetCodeEditor(plan.text);
+      if (insertResult !== "inserted") {
+        return { inserted: false, method: insertResult === "copied" ? "clipboard" : insertResult };
+      }
+
+      pushAiInsertSnapshot(snapshot);
+      return { inserted: true, method: "leetcode" };
+    }
+
+    if (snapshot.type === "page-codemirror") {
+      await insertCodeIntoCodeMirrorSnapshot(snapshot, plan.text);
+      pushAiInsertSnapshot(snapshot);
+      return { inserted: true, method: "codemirror-state" };
+    }
+
+    assertSnapshotTargetAvailable(target);
+
+    if (snapshot.type === "page-input") {
+      if (String(target.value || "") !== String(snapshot.value || "")) {
+        throw new Error("确认期间编辑器内容已变化，请重新生成差异。");
+      }
+
+      target.focus();
+      target.setRangeText(plan.text, snapshot.selectionStart, snapshot.selectionEnd, "end");
+      dispatchEditableChange(target);
+      pushAiInsertSnapshot(snapshot);
+      return { inserted: true, method: "value" };
+    }
+
+    if (readPageContentEditableText(target) !== String(snapshot.text || "")) {
+      throw new Error("确认期间编辑器内容已变化，请重新生成差异。");
+    }
+
     target.focus();
-    if (!document.execCommand("insertText", false, preparedText)) {
+    restoreContentEditableSelectionOffsets(target, snapshot.selection);
+    if (!document.execCommand("insertText", false, plan.text)) {
       throw new Error("目标编辑器没有接受输入。");
     }
 
     pushAiInsertSnapshot(snapshot);
-    output.textContent = "独立窗口代码已插入到页面，可点击“撤销插入”回退。";
-
-    return {
-      inserted: true,
-      method: "execCommand"
-    };
+    return { inserted: true, method: "execCommand" };
   }
 
   function isLeetCodeProblemPage() {
@@ -5211,6 +5470,7 @@
     lastDraftHistorySavedAt = draftHistory[0] ? draftHistory[0].savedAt : 0;
     updateDraftHistorySelect();
     updateActionButtonStates();
+    notifyReviewContextChange();
     statusText.textContent = lastProblemContext
       ? "题目上下文：已恢复草稿 " + lastProblemContext.length + " 字"
       : "题目上下文：等待同步";
@@ -5436,14 +5696,17 @@
       return;
     }
 
+    const captureTarget = event.currentTarget || header;
     panelDragState = {
       pointerId: event.pointerId,
       startX: event.clientX,
       startY: event.clientY,
       startLeft: panelLeft,
-      startTop: panelTop
+      startTop: panelTop,
+      captureTarget
     };
-    header.setPointerCapture(event.pointerId);
+    captureTarget.setPointerCapture(event.pointerId);
+    event.preventDefault();
   }
 
   function movePanelDrag(event) {
@@ -5464,7 +5727,10 @@
       return;
     }
 
-    header.releasePointerCapture(event.pointerId);
+    const captureTarget = panelDragState.captureTarget;
+    if (captureTarget && captureTarget.hasPointerCapture(event.pointerId)) {
+      captureTarget.releasePointerCapture(event.pointerId);
+    }
     panelDragState = null;
   }
 
@@ -5531,6 +5797,84 @@
     applyPanelPosition();
   }
 
+  function beginDiffResize(event) {
+    if (event.button !== 0) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    const captureTarget = event.currentTarget;
+    const direction = captureTarget.classList.contains("diff-resize-top-left") ? "top-left" : "bottom-right";
+    diffResizeState = {
+      pointerId: event.pointerId,
+      direction,
+      captureTarget,
+      startX: event.clientX,
+      startY: event.clientY,
+      startLeft: panelLeft,
+      startTop: panelTop,
+      startWidth: panel.offsetWidth,
+      startHeight: panel.offsetHeight
+    };
+    captureTarget.setPointerCapture(event.pointerId);
+  }
+
+  function moveDiffResize(event) {
+    if (!diffResizeState || event.pointerId !== diffResizeState.pointerId) {
+      return;
+    }
+
+    event.preventDefault();
+    const margin = 8;
+    const isTopLeft = diffResizeState.direction === "top-left";
+    const right = diffResizeState.startLeft + diffResizeState.startWidth;
+    const bottom = diffResizeState.startTop + diffResizeState.startHeight;
+    const maxWidth = Math.max(
+      160,
+      isTopLeft ? right - margin : window.innerWidth - diffResizeState.startLeft - margin
+    );
+    const maxHeight = Math.max(
+      220,
+      isTopLeft ? bottom - margin : window.innerHeight - diffResizeState.startTop - margin
+    );
+    const minWidth = Math.min(320, maxWidth);
+    const minHeight = Math.min(420, maxHeight);
+    const widthDelta = event.clientX - diffResizeState.startX;
+    const heightDelta = event.clientY - diffResizeState.startY;
+    const nextWidth = Math.min(
+      maxWidth,
+      Math.max(minWidth, diffResizeState.startWidth + (isTopLeft ? -widthDelta : widthDelta))
+    );
+    const nextHeight = Math.min(
+      maxHeight,
+      Math.max(minHeight, diffResizeState.startHeight + (isTopLeft ? -heightDelta : heightDelta))
+    );
+
+    if (isTopLeft) {
+      panelLeft = right - nextWidth;
+      panelTop = bottom - nextHeight;
+    }
+    panel.style.width = nextWidth + "px";
+    panel.style.height = nextHeight + "px";
+    clampPanelSizeAndPosition();
+    applyPanelPosition();
+  }
+
+  function endDiffResize(event) {
+    if (!diffResizeState || event.pointerId !== diffResizeState.pointerId) {
+      return;
+    }
+
+    const captureTarget = diffResizeState.captureTarget;
+    if (captureTarget && captureTarget.hasPointerCapture(event.pointerId)) {
+      captureTarget.releasePointerCapture(event.pointerId);
+    }
+    diffResizeState = null;
+    clampPanelSizeAndPosition();
+    applyPanelPosition();
+  }
+
   function openPanel() {
     const wasClosed = !panel.classList.contains("open");
     if (wasClosed) {
@@ -5580,6 +5924,10 @@
 
   function handleGlobalShortcut(event) {
     if (event.defaultPrevented || event.repeat) {
+      return;
+    }
+
+    if (activeDiffConfirmation) {
       return;
     }
 
@@ -5635,13 +5983,34 @@
   header.addEventListener("pointerup", endPanelDrag);
   header.addEventListener("pointercancel", endPanelDrag);
 
+  diffHeader.addEventListener("pointerdown", beginPanelDrag);
+  diffHeader.addEventListener("pointermove", movePanelDrag);
+  diffHeader.addEventListener("pointerup", endPanelDrag);
+  diffHeader.addEventListener("pointercancel", endPanelDrag);
+
   panelResizeTopLeft.addEventListener("pointerdown", beginPanelResizeTopLeft);
   panelResizeTopLeft.addEventListener("pointermove", movePanelResizeTopLeft);
   panelResizeTopLeft.addEventListener("pointerup", endPanelResizeTopLeft);
   panelResizeTopLeft.addEventListener("pointercancel", endPanelResizeTopLeft);
 
+  diffResizeHandles.forEach((handle) => {
+    handle.addEventListener("pointerdown", beginDiffResize);
+    handle.addEventListener("pointermove", moveDiffResize);
+    handle.addEventListener("pointerup", endDiffResize);
+    handle.addEventListener("pointercancel", endDiffResize);
+  });
+
   closeButton.addEventListener("click", () => {
+    closeDiffConfirmation(false);
     setPanelOpen(false);
+  });
+  diffCancelButton.addEventListener("click", () => closeDiffConfirmation(false));
+  diffConfirmButton.addEventListener("click", () => closeDiffConfirmation(true));
+  diffDialog.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeDiffConfirmation(false);
+    }
   });
 
   window.addEventListener("resize", () => {
@@ -5662,19 +6031,19 @@
   syncButton.addEventListener("click", syncProblemContext);
   nextButton.addEventListener("click", () => runAI("next"));
   checkButton.addEventListener("click", () => runAI("check"));
+  retryCheckButton.addEventListener("click", () => runCodeReview(true));
   stopAiButton.addEventListener("click", cancelActiveAiRequest);
   explainSelectionButton.addEventListener("click", () => runAI("explain-selection"));
   insertSuggestionButton.addEventListener("click", insertSuggestionAtCursor);
   insertPageButton.addEventListener("click", insertCodeIntoPage);
-  externalEditorButton.addEventListener("pointerdown", (event) => {
-    event.stopPropagation();
-  });
-  externalEditorButton.addEventListener("click", openExternalEditor);
   undoInsertButton.addEventListener("click", undoLastAiInsert);
   formatCodeButton.addEventListener("click", formatCodeInEditor);
   draftHistorySelect.addEventListener("change", restoreDraftHistoryEntry);
   output.addEventListener("click", handleOutputClick);
-  problemInput.addEventListener("input", saveDraft);
+  problemInput.addEventListener("input", () => {
+    notifyReviewContextChange();
+    saveDraft();
+  });
   suggestionScopeSelect.addEventListener("change", () => {
     updateSuggestionScopeNote();
     saveDraft();
@@ -5705,8 +6074,12 @@
     syncCodeEditorMetrics();
     saveDraft();
     updateActionButtonStates();
+    notifyReviewContextChange();
   });
-  languageSelect.addEventListener("change", saveDraft);
+  languageSelect.addEventListener("change", () => {
+    notifyReviewContextChange();
+    saveDraft();
+  });
 
   safeAddStorageChangedListener((changes, areaName) => {
     if (areaName !== "local" || panel.classList.contains("open")) {
@@ -5725,49 +6098,19 @@
       return false;
     }
 
+    if (message.type === "AI_REQUEST_PROGRESS") {
+      if (activeAiRequest && message.requestId === (activeAiRequest.childId || activeAiRequest.id)) {
+        if (activeAiRequest.mode === "check" && codeReviewSession) {
+          codeReviewSession.current = message.status;
+          renderCodeReview();
+        } else output.textContent = message.status;
+      }
+      return false;
+    }
+
     if (message.type === "OPEN_CODING_ASSISTANT") {
       openPanel();
       return false;
-    }
-
-    if (message.type === "GET_CODING_ASSISTANT_PAGE_CONTEXT") {
-      sendResponse({
-        ok: true,
-        draftKey: getDraftKey(),
-        draft: createDraftPayload(Date.now()),
-        payload: getPagePayloadV3(),
-        localProblem: buildLocalProblemContextV3(),
-        code: codeInput.value,
-        language: languageSelect.value
-      });
-      return false;
-    }
-
-    if (message.type === "PREPARE_EXTERNAL_EDITOR") {
-      saveDraft({ recordHistory: true, label: "打开独立窗口前" })
-        .then((draft) => {
-          setPanelOpen(false);
-          sendResponse({
-            ok: true,
-            draftKey: getDraftKey(),
-            draft
-          });
-        })
-        .catch((error) => {
-          sendResponse({ ok: false, error: error.message || String(error) });
-        });
-      return true;
-    }
-
-    if (message.type === "INSERT_CODE_FROM_EXTERNAL_EDITOR") {
-      insertExternalEditorCodeIntoPage(message.text || "")
-        .then((result) => {
-          sendResponse({ ok: true, ...result });
-        })
-        .catch((error) => {
-          sendResponse({ ok: false, error: error.message || String(error) });
-        });
-      return true;
     }
 
     return false;

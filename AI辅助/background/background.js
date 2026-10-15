@@ -1,13 +1,20 @@
-importScripts("ai-request-registry.js");
+importScripts("ai-request-registry.js", "../content/ai-budget.js", "ai-client.js");
 
 const DEFAULT_SETTINGS = {
   apiEndpoint: "https://api.openai.com/v1/chat/completions",
   apiKey: "",
   model: "gpt-4o-mini",
   timeoutSeconds: 90,
+  maxOutputTokens: 8192,
+  contextWindowTokens: 32768,
+  tokenParameter: "auto",
+  reasoningMode: "default",
   problemSource: "auto",
   problemServerEndpoint: "",
-  problemServerToken: ""
+  problemServerToken: "",
+  problemServerSendPageText: true,
+  problemServerSendSelection: false,
+  problemServerSendCode: false
 };
 
 const PROBLEM_TEXT_LIMIT = 30000;
@@ -30,22 +37,11 @@ const LEETCODE_QUESTION_QUERY = [
   "}"
 ].join("\n");
 
-const EXTERNAL_EDITOR_PATH = "frontend/editor/editor.html";
-const EXTERNAL_EDITOR_WIDTH = 980;
-const EXTERNAL_EDITOR_HEIGHT = 760;
-const EXTERNAL_EDITOR_WINDOW_STORE_KEY = "externalEditorWindowsByTabId";
-const externalEditorWindowsByTabId = new Map();
-
 chrome.runtime.onInstalled.addListener(() => {
   chrome.contextMenus.removeAll(() => {
     chrome.contextMenus.create({
       id: "coding-assistant-open",
       title: "打开 码伴 CodeMate",
-      contexts: ["page", "selection", "editable"]
-    });
-    chrome.contextMenus.create({
-      id: "coding-assistant-open-external",
-      title: "在独立窗口打开 码伴 CodeMate",
       contexts: ["page", "selection", "editable"]
     });
   });
@@ -56,77 +52,15 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
     return;
   }
 
-  if (info.menuItemId === "coding-assistant-open-external") {
-    openExternalEditorForTab(tab).catch(() => {
-      chrome.tabs.sendMessage(tab.id, {
-        type: "OPEN_CODING_ASSISTANT",
-        selectionText: info.selectionText || ""
-      });
-    });
-    return;
-  }
-
   chrome.tabs.sendMessage(tab.id, {
     type: "OPEN_CODING_ASSISTANT",
     selectionText: info.selectionText || ""
   });
 });
 
-chrome.commands.onCommand.addListener((command) => {
-  if (command !== "open-external-editor") {
-    return;
-  }
-
-  toggleExternalEditorForCommand()
-    .catch(() => {
-      // Ignore background command failures; the user can still use the popup or page button.
-    });
-});
-
-chrome.windows.onRemoved.addListener((windowId) => {
-  forgetExternalEditorWindow(windowId);
-});
-
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || !message.type) {
     return false;
-  }
-
-  if (message.type === "OPEN_EXTERNAL_EDITOR") {
-    resolveExternalEditorSourceTab(message, sender)
-      .then((tab) => openExternalEditorForTab(tab))
-      .then((result) => {
-        sendResponse({ ok: true, ...result });
-      })
-      .catch((error) => {
-        sendResponse({ ok: false, error: error.message || String(error) });
-      });
-
-    return true;
-  }
-
-  if (message.type === "GET_EXTERNAL_EDITOR_PAGE_CONTEXT") {
-    getExternalEditorPageContext(message.tabId)
-      .then((result) => {
-        sendResponse({ ok: true, ...result });
-      })
-      .catch((error) => {
-        sendResponse({ ok: false, error: error.message || String(error) });
-      });
-
-    return true;
-  }
-
-  if (message.type === "INSERT_EXTERNAL_EDITOR_CODE") {
-    insertExternalEditorCode(message.tabId, message.text || "")
-      .then((result) => {
-        sendResponse({ ok: true, ...result });
-      })
-      .catch((error) => {
-        sendResponse({ ok: false, error: error.message || String(error) });
-      });
-
-    return true;
   }
 
   if (message.type === "CALL_CODING_AI" || message.type === "TEST_CODING_AI") {
@@ -137,12 +71,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     const requestId = message.type === "CALL_CODING_AI" ? String(message.requestId || "") : "";
     const request = CodingAiRequestRegistry.create(requestId);
 
-    callCodingAI(messages, { signal: request.signal })
+    callCodingAI(messages, {
+      signal: request.signal,
+      taskType: message.type === "TEST_CODING_AI" ? "test" : message.taskType,
+      onProgress: (status) => {
+        if (sender && sender.tab && sender.tab.id) {
+          chrome.tabs.sendMessage(sender.tab.id, { type: "AI_REQUEST_PROGRESS", requestId, status }).catch(() => {});
+        }
+      }
+    })
       .then((answer) => {
         sendResponse({ ok: true, answer });
       })
       .catch((error) => {
-        sendResponse({ ok: false, error: error.message || String(error) });
+        sendResponse({ ok: false, error: error.message || String(error), code: error.code || "UNKNOWN", status: error.status });
       })
       .finally(() => {
         CodingAiRequestRegistry.finish(request.requestId, request.controller);
@@ -229,6 +171,42 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message.type === "CAPTURE_CODEMIRROR_CODE_SNAPSHOT") {
+    captureCodeMirrorCodeSnapshotFromTab(getTargetTabId(message, sender))
+      .then((result) => {
+        sendResponse({ ok: true, ...result });
+      })
+      .catch((error) => {
+        sendResponse({ ok: false, error: error.message || String(error) });
+      });
+
+    return true;
+  }
+
+  if (message.type === "INSERT_CODEMIRROR_CODE") {
+    insertCodeMirrorCodeInTab(getTargetTabId(message, sender), message.payload || {})
+      .then((result) => {
+        sendResponse({ ok: true, ...result });
+      })
+      .catch((error) => {
+        sendResponse({ ok: false, error: error.message || String(error) });
+      });
+
+    return true;
+  }
+
+  if (message.type === "RESTORE_CODEMIRROR_CODE_SNAPSHOT") {
+    restoreCodeMirrorCodeSnapshotInTab(getTargetTabId(message, sender), message.snapshot || {})
+      .then((result) => {
+        sendResponse({ ok: true, ...result });
+      })
+      .catch((error) => {
+        sendResponse({ ok: false, error: error.message || String(error) });
+      });
+
+    return true;
+  }
+
   return false;
 });
 
@@ -242,635 +220,13 @@ function getTargetTabId(message, sender) {
   return sender && sender.tab && sender.tab.id;
 }
 
-async function resolveExternalEditorSourceTab(message, sender) {
-  const explicitTabId = getTargetTabId(message, sender);
-
-  if (explicitTabId) {
-    return getTabById(explicitTabId);
-  }
-
-  const tabs = await queryTabs({ active: true, currentWindow: true });
-  const tab = tabs && tabs[0];
-
-  if (!tab || !tab.id) {
-    throw new Error("No active tab found for the external editor.");
-  }
-
-  const editorSourceTabId = getExternalEditorSourceTabId(tab.url);
-
-  if (editorSourceTabId) {
-    return getTabById(editorSourceTabId);
-  }
-
-  return tab;
-}
-
-async function toggleExternalEditorForCommand() {
-  const tabs = await queryTabs({ active: true, currentWindow: true });
-  const activeTab = tabs && tabs[0];
-  const activeEditorSourceTabId = getExternalEditorSourceTabId(activeTab && activeTab.url);
-
-  if (activeEditorSourceTabId && activeTab && activeTab.windowId) {
-    const closed = await closeExternalEditorWindowsForTab(activeEditorSourceTabId, [{
-      tabId: activeTab.id,
-      windowId: activeTab.windowId
-    }]);
-
-    return {
-      action: "closed",
-      tabId: activeEditorSourceTabId,
-      windowId: closed.windowId || activeTab.windowId
-    };
-  }
-
-  const tab = await resolveExternalEditorSourceTab({}, null);
-  return toggleExternalEditorForTab(tab);
-}
-
-async function toggleExternalEditorForTab(tab) {
-  if (!tab || !tab.id) {
-    throw new Error("No source tab found for the external editor.");
-  }
-
-  const existingEditors = await findExternalEditorTabsForSourceTab(tab.id);
-
-  if (existingEditors.length) {
-    const closed = await closeExternalEditorWindowsForTab(tab.id, existingEditors);
-
-    if (closed.closed) {
-      return {
-        action: "closed",
-        tabId: tab.id,
-        windowId: closed.windowId
-      };
-    }
-  }
-
-  return openExternalEditorForTab(tab);
-}
-
-async function openExternalEditorForTab(tab) {
-  if (!tab || !tab.id) {
-    throw new Error("No source tab found for the external editor.");
-  }
-
-  const existingEditor = await focusExistingExternalEditor(tab.id);
-
-  if (existingEditor) {
-    return {
-      action: "focused",
-      tabId: tab.id,
-      windowId: existingEditor.windowId
-    };
-  }
-
-  const url = chrome.runtime.getURL(EXTERNAL_EDITOR_PATH + "?tabId=" + encodeURIComponent(String(tab.id)));
-  const createdWindow = await createWindow({
-    url,
-    type: "popup",
-    width: EXTERNAL_EDITOR_WIDTH,
-    height: EXTERNAL_EDITOR_HEIGHT,
-    focused: true
-  });
-  const createdWindowId = createdWindow && createdWindow.id;
-
-  rememberExternalEditorWindow(tab.id, createdWindowId);
-
-  return {
-    action: "opened",
-    tabId: tab.id,
-    windowId: createdWindowId
-  };
-}
-
-async function focusExistingExternalEditor(tabId) {
-  const editors = await findExternalEditorTabsForSourceTab(tabId);
-
-  for (const editor of editors) {
-    if (!isPositiveInteger(editor.windowId)) {
-      continue;
-    }
-
-    try {
-      await focusWindow(editor.windowId);
-      rememberExternalEditorWindow(tabId, editor.windowId);
-      return editor;
-    } catch {
-      forgetExternalEditorWindow(editor.windowId);
-    }
-  }
-
-  return null;
-}
-
-async function closeExternalEditorWindowsForTab(tabId, editors) {
-  const targets = editors && editors.length
-    ? dedupeExternalEditorTabs(editors)
-    : await findExternalEditorTabsForSourceTab(tabId);
-  let closedWindowId = null;
-
-  if (!targets.length) {
-    return { closed: false, windowId: null };
-  }
-
-  await flushExternalEditorDraft(tabId).catch(() => null);
-
-  for (const target of targets) {
-    if (!isPositiveInteger(target.windowId)) {
-      continue;
-    }
-
-    try {
-      await removeWindow(target.windowId);
-      closedWindowId = closedWindowId || target.windowId;
-    } catch {
-      // The window may already be gone; forget the stale reference below.
-    } finally {
-      forgetExternalEditorWindow(target.windowId);
-    }
-  }
-
-  return {
-    closed: Boolean(closedWindowId),
-    windowId: closedWindowId
-  };
-}
-
-async function findExternalEditorTabsForSourceTab(tabId) {
-  const sourceTabId = normalizeTabId(tabId);
-  const candidates = [];
-  const trackedWindowId = externalEditorWindowsByTabId.get(sourceTabId);
-
-  if (isPositiveInteger(trackedWindowId)) {
-    candidates.push({ tabId: null, windowId: trackedWindowId });
-    return candidates;
-  }
-
-  const storedWindowId = await getStoredExternalEditorWindowId(sourceTabId);
-
-  if (isPositiveInteger(storedWindowId)) {
-    candidates.push({ tabId: null, windowId: storedWindowId });
-    return candidates;
-  }
-
-  const editorTabs = await queryTabs({
-    url: chrome.runtime.getURL(EXTERNAL_EDITOR_PATH) + "*"
-  }).catch(() => []);
-
-  for (const editorTab of editorTabs) {
-    if (getExternalEditorSourceTabId(editorTab && editorTab.url) !== sourceTabId) {
-      continue;
-    }
-
-    if (!isPositiveInteger(editorTab.windowId)) {
-      continue;
-    }
-
-    candidates.push({
-      tabId: editorTab.id,
-      windowId: editorTab.windowId
-    });
-    rememberExternalEditorWindow(sourceTabId, editorTab.windowId);
-  }
-
-  return dedupeExternalEditorTabs(candidates);
-}
-
-function dedupeExternalEditorTabs(editors) {
-  const seenWindowIds = new Set();
-  const uniqueEditors = [];
-
-  for (const editor of editors || []) {
-    if (!isPositiveInteger(editor && editor.windowId) || seenWindowIds.has(editor.windowId)) {
-      continue;
-    }
-
-    seenWindowIds.add(editor.windowId);
-    uniqueEditors.push(editor);
-  }
-
-  return uniqueEditors;
-}
-
-function getExternalEditorSourceTabId(url) {
-  try {
-    const parsedUrl = new URL(url || "");
-    const editorUrl = new URL(chrome.runtime.getURL(EXTERNAL_EDITOR_PATH));
-
-    if (parsedUrl.origin !== editorUrl.origin || parsedUrl.pathname !== editorUrl.pathname) {
-      return 0;
-    }
-
-    const tabId = Number(parsedUrl.searchParams.get("tabId"));
-    return isPositiveInteger(tabId) ? tabId : 0;
-  } catch {
-    return 0;
-  }
-}
-
-function rememberExternalEditorWindow(tabId, windowId) {
-  if (!isPositiveInteger(tabId) || !isPositiveInteger(windowId)) {
-    return;
-  }
-
-  externalEditorWindowsByTabId.set(tabId, windowId);
-  persistExternalEditorWindows().catch(() => null);
-}
-
-function forgetExternalEditorWindow(windowId) {
-  if (!isPositiveInteger(windowId)) {
-    return;
-  }
-
-  for (const [tabId, trackedWindowId] of externalEditorWindowsByTabId.entries()) {
-    if (trackedWindowId === windowId) {
-      externalEditorWindowsByTabId.delete(tabId);
-    }
-  }
-
-  persistExternalEditorWindows().catch(() => null);
-}
-
-async function getStoredExternalEditorWindowId(tabId) {
-  if (!chrome.storage || !chrome.storage.session || !isPositiveInteger(tabId)) {
-    return 0;
-  }
-
-  const items = await storageSessionGet([EXTERNAL_EDITOR_WINDOW_STORE_KEY]).catch(() => ({}));
-  const storedWindows = items[EXTERNAL_EDITOR_WINDOW_STORE_KEY] || {};
-  const windowId = Number(storedWindows[String(tabId)]);
-
-  if (isPositiveInteger(windowId)) {
-    externalEditorWindowsByTabId.set(tabId, windowId);
-    return windowId;
-  }
-
-  return 0;
-}
-
-async function persistExternalEditorWindows() {
-  if (!chrome.storage || !chrome.storage.session) {
-    return;
-  }
-
-  const storedWindows = {};
-
-  for (const [tabId, windowId] of externalEditorWindowsByTabId.entries()) {
-    if (isPositiveInteger(tabId) && isPositiveInteger(windowId)) {
-      storedWindows[String(tabId)] = windowId;
-    }
-  }
-
-  await storageSessionSet({
-    [EXTERNAL_EDITOR_WINDOW_STORE_KEY]: storedWindows
-  });
-}
-
-function isPositiveInteger(value) {
-  return Number.isInteger(value) && value > 0;
-}
-
-async function flushExternalEditorDraft(tabId) {
-  if (!isPositiveInteger(tabId)) {
-    return null;
-  }
-
-  return sendRuntimeMessage({
-    type: "FLUSH_EXTERNAL_EDITOR_DRAFT",
-    tabId
-  });
-}
-
-async function getExternalEditorPageContext(tabId) {
-  const targetTabId = normalizeTabId(tabId);
-  const tab = await getTabById(targetTabId);
-  const fallbackPayload = buildFallbackPagePayload(tab);
-
-  try {
-    const response = await sendMessageToTab(targetTabId, {
-      type: "GET_CODING_ASSISTANT_PAGE_CONTEXT"
-    });
-
-    return {
-      tab: buildSourceTabInfo(tab),
-      draftKey: response.draftKey || buildDraftKeyFromTab(tab),
-      draft: response.draft || null,
-      payload: response.payload || fallbackPayload,
-      localProblem: response.localProblem || "",
-      draftCode: response.code || "",
-      language: response.language || "auto"
-    };
-  } catch (error) {
-    return {
-      tab: buildSourceTabInfo(tab),
-      draftKey: buildDraftKeyFromTab(tab),
-      draft: null,
-      payload: fallbackPayload,
-      localProblem: "",
-      draftCode: "",
-      language: "auto",
-      warning: error.message || String(error)
-    };
-  }
-}
-
-async function insertExternalEditorCode(tabId, text) {
-  const targetTabId = normalizeTabId(tabId);
-
-  if (!String(text || "").trim()) {
-    throw new Error("No code to insert.");
-  }
-
-  const response = await sendMessageToTab(targetTabId, {
-    type: "INSERT_CODE_FROM_EXTERNAL_EDITOR",
-    text
-  });
-
-  return {
-    inserted: Boolean(response.inserted),
-    method: response.method || "content-script"
-  };
-}
-
-function normalizeTabId(tabId) {
-  const value = Number(tabId);
-
-  if (!Number.isInteger(value) || value <= 0) {
-    throw new Error("Invalid source tab for the external editor.");
-  }
-
-  return value;
-}
-
-function buildFallbackPagePayload(tab) {
-  return {
-    pageUrl: tab && tab.url ? tab.url : "",
-    pageTitle: tab && tab.title ? tab.title : "",
-    pageText: "",
-    selection: "",
-    code: "",
-    language: "auto",
-    platform: "",
-    problemId: ""
-  };
-}
-
-function buildSourceTabInfo(tab) {
-  return {
-    id: tab && tab.id,
-    title: tab && tab.title ? tab.title : "",
-    url: tab && tab.url ? tab.url : ""
-  };
-}
-
-function buildDraftKeyFromTab(tab) {
-  try {
-    const url = new URL(tab && tab.url ? tab.url : "");
-
-    if (!url.origin || !url.pathname) {
-      return "";
-    }
-
-    return "draft:" + url.origin + url.pathname;
-  } catch {
-    return "";
-  }
-}
-
-function getTabById(tabId) {
-  return new Promise((resolve, reject) => {
-    chrome.tabs.get(tabId, (tab) => {
-      if (chrome.runtime.lastError) {
-        reject(new Error(chrome.runtime.lastError.message));
-        return;
-      }
-
-      if (!tab || !tab.id) {
-        reject(new Error("Source tab is no longer available."));
-        return;
-      }
-
-      resolve(tab);
-    });
-  });
-}
-
-function queryTabs(queryInfo) {
-  return new Promise((resolve, reject) => {
-    chrome.tabs.query(queryInfo, (tabs) => {
-      if (chrome.runtime.lastError) {
-        reject(new Error(chrome.runtime.lastError.message));
-        return;
-      }
-
-      resolve(tabs || []);
-    });
-  });
-}
-
-function storageSessionGet(keys) {
-  return new Promise((resolve, reject) => {
-    chrome.storage.session.get(keys, (items) => {
-      if (chrome.runtime.lastError) {
-        reject(new Error(chrome.runtime.lastError.message));
-        return;
-      }
-
-      resolve(items || {});
-    });
-  });
-}
-
-function storageSessionSet(items) {
-  return new Promise((resolve, reject) => {
-    chrome.storage.session.set(items, () => {
-      if (chrome.runtime.lastError) {
-        reject(new Error(chrome.runtime.lastError.message));
-        return;
-      }
-
-      resolve();
-    });
-  });
-}
-
-function createWindow(options) {
-  return new Promise((resolve, reject) => {
-    chrome.windows.create(options, (createdWindow) => {
-      if (chrome.runtime.lastError) {
-        reject(new Error(chrome.runtime.lastError.message));
-        return;
-      }
-
-      resolve(createdWindow || {});
-    });
-  });
-}
-
-function focusWindow(windowId) {
-  return new Promise((resolve, reject) => {
-    chrome.windows.update(windowId, { focused: true }, (updatedWindow) => {
-      if (chrome.runtime.lastError) {
-        reject(new Error(chrome.runtime.lastError.message));
-        return;
-      }
-
-      resolve(updatedWindow || {});
-    });
-  });
-}
-
-function removeWindow(windowId) {
-  return new Promise((resolve, reject) => {
-    chrome.windows.remove(windowId, () => {
-      if (chrome.runtime.lastError) {
-        reject(new Error(chrome.runtime.lastError.message));
-        return;
-      }
-
-      resolve();
-    });
-  });
-}
-
-function sendRuntimeMessage(message) {
-  return new Promise((resolve, reject) => {
-    chrome.runtime.sendMessage(message, (response) => {
-      if (chrome.runtime.lastError) {
-        reject(new Error(chrome.runtime.lastError.message));
-        return;
-      }
-
-      if (!response || response.ok === false) {
-        reject(new Error(response && response.error ? response.error : "Request failed."));
-        return;
-      }
-
-      resolve(response);
-    });
-  });
-}
-
-function sendMessageToTab(tabId, message) {
-  return new Promise((resolve, reject) => {
-    chrome.tabs.sendMessage(tabId, message, (response) => {
-      if (chrome.runtime.lastError) {
-        reject(new Error(chrome.runtime.lastError.message));
-        return;
-      }
-
-      if (!response || response.ok === false) {
-        reject(new Error(response && response.error ? response.error : "Request failed."));
-        return;
-      }
-
-      resolve(response);
-    });
-  });
-}
-
 async function callCodingAI(messages, options = {}) {
-  const settings = await chrome.storage.sync.get(DEFAULT_SETTINGS);
-  const apiEndpoint = String(settings.apiEndpoint || "").trim();
-  const apiKey = String(settings.apiKey || "").trim();
-  const model = String(settings.model || "").trim();
-  const timeoutSeconds = normalizeTimeout(settings.timeoutSeconds);
-
-  if (!apiEndpoint) {
-    throw new Error("AI 接口地址为空。请在插件弹窗中填写地址，例如 https://api.openai.com/v1/chat/completions。");
-  }
-
-  if (!model) {
-    throw new Error("模型名称为空。请在插件弹窗中填写模型名称。");
-  }
-
-  const headers = {
-    "Content-Type": "application/json"
-  };
-
-  if (apiKey) {
-    headers.Authorization = "Bearer " + apiKey;
-  }
-
-  const requestBody = {
-    model,
-    messages,
-    temperature: 0.1,
-    max_tokens: getMaxTokens(messages),
-    stream: false
-  };
-  let response = await fetchWithTimeout(apiEndpoint, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(requestBody)
-  }, timeoutSeconds, "AI 请求", {
-    signal: options.signal,
-    abortMessage: "AI 请求已停止。"
-  });
-
-  let rawText = await response.text();
-  let data = safeParseJson(rawText);
-
-  if (looksLikeHtml(rawText)) {
-    throw new Error("AI 接口返回的是网页 HTML，不是模型接口。请确认地址是 OpenAI 兼容的 /v1/chat/completions 接口。");
-  }
-
-  if (!response.ok) {
-    const message = getErrorMessage(data, rawText) || "AI 请求失败，状态码：" + response.status;
-    throw new Error(message);
-  }
-
-  let answer = extractAnswer(data, rawText);
-
-  if (!answer && shouldRetryWithoutThinking(data)) {
-    const retryBody = {
-      ...requestBody,
-      enable_thinking: false,
-      max_tokens: Math.max(getMaxTokens(messages) * 2, 3200)
-    };
-    const retryResponse = await fetchWithTimeout(apiEndpoint, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(retryBody)
-    }, timeoutSeconds, "AI 重试", {
-      signal: options.signal,
-      abortMessage: "AI 请求已停止。"
-    });
-    const retryRawText = await retryResponse.text();
-    const retryData = safeParseJson(retryRawText);
-    const retryAnswer = retryResponse.ok && !looksLikeHtml(retryRawText)
-      ? extractAnswer(retryData, retryRawText)
-      : "";
-
-    if (retryAnswer) {
-      return retryAnswer.trim();
-    }
-  }
-
-  if (!answer) {
-    const choice = data && Array.isArray(data.choices) ? data.choices[0] : null;
-
-    if (choice && choice.finish_reason === "length") {
-      throw new Error("AI 输出在生成完整答案前被截断了。请提高模型输出上限，或关闭模型的深度思考模式后重试。");
-    }
-
-    if (choice && choice.message && hasReasoningOnlyResponse(choice.message)) {
-      throw new Error("模型只返回了思考过程，没有返回最终答案。请关闭模型的深度思考模式，或更换支持 Chat Completions 最终内容字段的模型。");
-    }
-
-    throw new Error("AI 没有返回内容。请确认接口兼容 OpenAI Chat Completions 格式，或检查模型名称是否正确。");
-  }
-
-  return answer.trim();
-}
-
-function shouldRetryWithoutThinking(data) {
-  const choice = data && Array.isArray(data.choices) ? data.choices[0] : null;
-
-  return Boolean(choice && (
-    choice.finish_reason === "length" ||
-    (choice.message && hasReasoningOnlyResponse(choice.message))
-  ));
+  const [settings, secrets] = await Promise.all([
+    chrome.storage.sync.get(DEFAULT_SETTINGS),
+    chrome.storage.local.get({ apiKey: "" })
+  ]);
+  const apiKey = String(secrets.apiKey || settings.apiKey || "").trim();
+  return CodingAiClient.call(messages, { ...options, settings, apiKey });
 }
 
 async function insertLeetCodeCodeIntoTab(tabId, text) {
@@ -925,6 +281,362 @@ async function restoreLeetCodeCodeSnapshotInTab(tabId, text) {
     restored: true,
     method: result.method || "main-world"
   };
+}
+
+async function captureCodeMirrorCodeSnapshotFromTab(tabId) {
+  if (!tabId) {
+    throw new Error("No active tab found for CodeMirror snapshot.");
+  }
+
+  const results = await chrome.scripting.executeScript({
+    target: { tabId },
+    world: "MAIN",
+    func: captureCodeMirrorCodeSnapshotInMainWorld
+  });
+  const result = results && results[0] && results[0].result;
+
+  if (!result || !result.ok) {
+    throw new Error(result && result.error || "Could not access the CodeMirror editor state.");
+  }
+
+  return result;
+}
+
+async function insertCodeMirrorCodeInTab(tabId, payload) {
+  if (!tabId) {
+    throw new Error("No active tab found for CodeMirror insertion.");
+  }
+
+  const results = await chrome.scripting.executeScript({
+    target: { tabId },
+    world: "MAIN",
+    func: insertCodeMirrorCodeInMainWorld,
+    args: [payload]
+  });
+  const result = results && results[0] && results[0].result;
+
+  if (!result || !result.ok) {
+    throw new Error(result && result.error || "Could not insert into the CodeMirror editor state.");
+  }
+
+  return result;
+}
+
+async function restoreCodeMirrorCodeSnapshotInTab(tabId, snapshot) {
+  if (!tabId) {
+    throw new Error("No active tab found for CodeMirror restore.");
+  }
+
+  const results = await chrome.scripting.executeScript({
+    target: { tabId },
+    world: "MAIN",
+    func: restoreCodeMirrorCodeSnapshotInMainWorld,
+    args: [snapshot]
+  });
+  const result = results && results[0] && results[0].result;
+
+  if (!result || !result.ok) {
+    throw new Error(result && result.error || "Could not restore the CodeMirror editor state.");
+  }
+
+  return result;
+}
+
+function captureCodeMirrorCodeSnapshotInMainWorld() {
+  try {
+    var target = findCodeMirrorContent();
+    var view = getCodeMirrorEditorView(target);
+
+    if (!view) {
+      throw new Error("CodeMirror 6 EditorView was not found.");
+    }
+
+    var selection = view.state.selection && view.state.selection.main;
+    return {
+      ok: true,
+      method: "codemirror-state",
+      text: view.state.doc.toString(),
+      anchor: selection ? selection.anchor : 0,
+      head: selection ? selection.head : 0
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error && error.message ? error.message : String(error)
+    };
+  }
+
+  function findCodeMirrorContent() {
+    var active = document.activeElement;
+
+    if (active && active.matches && active.matches(".cm-content[contenteditable='true']")) {
+      return active;
+    }
+
+    var focused = document.querySelector(".cm-editor.cm-focused .cm-content[contenteditable='true']");
+    if (focused) {
+      return focused;
+    }
+
+    var candidates = Array.prototype.slice.call(
+      document.querySelectorAll(".cm-editor .cm-content[contenteditable='true']")
+    ).filter(isVisibleElement);
+    return candidates[candidates.length - 1] || null;
+  }
+
+  function getCodeMirrorEditorView(target) {
+    var node = target;
+
+    while (node) {
+      var contentView = node.cmView;
+      var view = contentView && (contentView.view || contentView.editorView);
+
+      if (view && view.state && view.state.doc && typeof view.dispatch === "function") {
+        return view;
+      }
+
+      var tile = node.cmTile;
+      while (tile) {
+        if (tile.view && tile.view.state && tile.view.state.doc && typeof tile.view.dispatch === "function") {
+          return tile.view;
+        }
+        tile = tile.parent;
+      }
+
+      node = node.parentElement;
+    }
+
+    return null;
+  }
+
+  function isVisibleElement(node) {
+    if (!node || !node.getBoundingClientRect) {
+      return false;
+    }
+
+    var rect = node.getBoundingClientRect();
+    var style = window.getComputedStyle(node);
+    return rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden";
+  }
+}
+
+function insertCodeMirrorCodeInMainWorld(payload) {
+  try {
+    var target = findCodeMirrorContent();
+    var view = getCodeMirrorEditorView(target);
+
+    if (!view) {
+      throw new Error("CodeMirror 6 EditorView was not found.");
+    }
+
+    var currentText = view.state.doc.toString();
+    var expectedText = normalizeText(payload && payload.beforeText);
+    if (currentText !== expectedText) {
+      throw new Error("CodeMirror content changed after the insertion position was captured.");
+    }
+
+    var insertText = normalizeText(payload && payload.text);
+    var anchor = clampOffset(payload && payload.anchor, currentText.length);
+    var head = clampOffset(payload && payload.head, currentText.length);
+    var from = Math.min(anchor, head);
+    var to = Math.max(anchor, head);
+    var cursor = from + insertText.length;
+
+    view.dispatch({
+      changes: {
+        from: from,
+        to: to,
+        insert: insertText
+      },
+      selection: { anchor: cursor, head: cursor }
+    });
+
+    if (typeof view.focus === "function") {
+      view.focus();
+    }
+
+    return {
+      ok: true,
+      method: "codemirror-state",
+      from: from,
+      to: to,
+      cursor: cursor,
+      text: view.state.doc.toString()
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error && error.message ? error.message : String(error)
+    };
+  }
+
+  function normalizeText(value) {
+    return String(value || "")
+      .replace(/\r\n?/g, "\n")
+      .replace(/\u0000/g, "");
+  }
+
+  function findCodeMirrorContent() {
+    var active = document.activeElement;
+
+    if (active && active.matches && active.matches(".cm-content[contenteditable='true']")) {
+      return active;
+    }
+
+    var focused = document.querySelector(".cm-editor.cm-focused .cm-content[contenteditable='true']");
+    if (focused) {
+      return focused;
+    }
+
+    var candidates = Array.prototype.slice.call(
+      document.querySelectorAll(".cm-editor .cm-content[contenteditable='true']")
+    ).filter(isVisibleElement);
+    return candidates[candidates.length - 1] || null;
+  }
+
+  function getCodeMirrorEditorView(target) {
+    var node = target;
+
+    while (node) {
+      var contentView = node.cmView;
+      var view = contentView && (contentView.view || contentView.editorView);
+
+      if (view && view.state && view.state.doc && typeof view.dispatch === "function") {
+        return view;
+      }
+
+      var tile = node.cmTile;
+      while (tile) {
+        if (tile.view && tile.view.state && tile.view.state.doc && typeof tile.view.dispatch === "function") {
+          return tile.view;
+        }
+        tile = tile.parent;
+      }
+
+      node = node.parentElement;
+    }
+
+    return null;
+  }
+
+  function clampOffset(value, length) {
+    var number = Number(value);
+    return Number.isFinite(number) ? Math.max(0, Math.min(number, length)) : 0;
+  }
+
+  function isVisibleElement(node) {
+    if (!node || !node.getBoundingClientRect) {
+      return false;
+    }
+
+    var rect = node.getBoundingClientRect();
+    var style = window.getComputedStyle(node);
+    return rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden";
+  }
+}
+
+function restoreCodeMirrorCodeSnapshotInMainWorld(snapshot) {
+  try {
+    var target = findCodeMirrorContent();
+    var view = getCodeMirrorEditorView(target);
+
+    if (!view) {
+      throw new Error("CodeMirror 6 EditorView was not found.");
+    }
+
+    var text = String(snapshot && snapshot.text || "")
+      .replace(/\r\n?/g, "\n")
+      .replace(/\u0000/g, "");
+    var anchor = clampOffset(snapshot && snapshot.anchor, text.length);
+    var head = clampOffset(snapshot && snapshot.head, text.length);
+
+    view.dispatch({
+      changes: {
+        from: 0,
+        to: view.state.doc.length,
+        insert: text
+      },
+      selection: { anchor: anchor, head: head }
+    });
+
+    if (typeof view.focus === "function") {
+      view.focus();
+    }
+
+    var restoredText = view.state.doc.toString();
+    if (restoredText !== text) {
+      throw new Error("CodeMirror state did not match the saved snapshot after restore.");
+    }
+
+    return {
+      ok: true,
+      method: "codemirror-state",
+      text: restoredText
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error && error.message ? error.message : String(error)
+    };
+  }
+
+  function findCodeMirrorContent() {
+    var active = document.activeElement;
+
+    if (active && active.matches && active.matches(".cm-content[contenteditable='true']")) {
+      return active;
+    }
+
+    var focused = document.querySelector(".cm-editor.cm-focused .cm-content[contenteditable='true']");
+    if (focused) {
+      return focused;
+    }
+
+    var candidates = Array.prototype.slice.call(
+      document.querySelectorAll(".cm-editor .cm-content[contenteditable='true']")
+    ).filter(isVisibleElement);
+    return candidates[candidates.length - 1] || null;
+  }
+
+  function getCodeMirrorEditorView(target) {
+    var node = target;
+
+    while (node) {
+      var contentView = node.cmView;
+      var view = contentView && (contentView.view || contentView.editorView);
+
+      if (view && view.state && view.state.doc && typeof view.dispatch === "function") {
+        return view;
+      }
+
+      var tile = node.cmTile;
+      while (tile) {
+        if (tile.view && tile.view.state && tile.view.state.doc && typeof tile.view.dispatch === "function") {
+          return tile.view;
+        }
+        tile = tile.parent;
+      }
+
+      node = node.parentElement;
+    }
+
+    return null;
+  }
+
+  function clampOffset(value, length) {
+    var number = Number(value);
+    return Number.isFinite(number) ? Math.max(0, Math.min(number, length)) : 0;
+  }
+
+  function isVisibleElement(node) {
+    if (!node || !node.getBoundingClientRect) {
+      return false;
+    }
+
+    var rect = node.getBoundingClientRect();
+    var style = window.getComputedStyle(node);
+    return rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden";
+  }
 }
 
 function prepareLeetCodeInsertText(text) {
@@ -1975,13 +1687,27 @@ async function captureLeetCodeCodeSnapshotInMainWorld() {
       };
     }
 
-    var contentText = normalizeCodeText(target.innerText || target.textContent || "");
+    var contentText = readEditableCodeText(target);
     return {
       ok: true,
       method: "dom",
       text: contentText,
       languageId: detectLanguageIdFromCode(contentText)
     };
+  }
+
+  function readEditableCodeText(target) {
+    var codeMirrorLines = target && target.querySelectorAll
+      ? Array.prototype.slice.call(target.querySelectorAll(".cm-line"))
+      : [];
+
+    if (codeMirrorLines.length > 0) {
+      return normalizeCodeText(codeMirrorLines.map(function (line) {
+        return line.textContent || "";
+      }).join("\n"));
+    }
+
+    return normalizeCodeText(target && (target.innerText || target.textContent) || "");
   }
 
   function detectLanguageIdFromCode(code) {
@@ -2065,11 +1791,21 @@ async function captureLeetCodeCodeSnapshotInMainWorld() {
 }
 
 async function testProblemSource() {
-  const settings = await chrome.storage.sync.get(DEFAULT_SETTINGS);
+  const [settings, secrets] = await Promise.all([
+    chrome.storage.sync.get(DEFAULT_SETTINGS),
+    chrome.storage.local.get({ problemServerToken: "" })
+  ]);
   const source = settings.problemSource || "auto";
 
   if (source === "custom") {
-    return fetchProblemContextV3({
+    const endpoint = String(settings.problemServerEndpoint || "").trim();
+    const token = String(secrets.problemServerToken || settings.problemServerToken || "").trim();
+
+    if (!endpoint) {
+      throw new Error("题目服务器地址为空。请先填写服务器地址。");
+    }
+
+    return testCustomProblemServer(endpoint, token, normalizeTimeout(settings.timeoutSeconds), {
       pageUrl: "chrome-extension://test",
       pageTitle: "连接测试",
       pageText: "这是一段用于测试题目服务器连接的页面文本。",
@@ -2077,7 +1813,7 @@ async function testProblemSource() {
       code: "",
       language: "auto",
       test: true
-    }, { requireServer: true });
+    });
   }
 
   if (source === "page") {
@@ -2105,129 +1841,13 @@ async function testProblemSource() {
   return fetchLuoguProblem("P1001", normalizeTimeout(settings.timeoutSeconds));
 }
 
-async function fetchProblemContext(payload, options = {}) {
-  const settings = await chrome.storage.sync.get(DEFAULT_SETTINGS);
-  const endpoint = String(settings.problemServerEndpoint || "").trim();
-  const token = String(settings.problemServerToken || "").trim();
-  const source = settings.problemSource || "auto";
-  const timeoutSeconds = normalizeTimeout(settings.timeoutSeconds);
-  const luoguProblemId = payload.problemId || getLuoguProblemId(payload.pageUrl);
-
-  if ((source === "luogu" || (source === "auto" && luoguProblemId)) && luoguProblemId) {
-    try {
-      return await fetchLuoguProblem(luoguProblemId, timeoutSeconds);
-    } catch (error) {
-      if (source === "luogu" || options.requireServer) {
-        throw error;
-      }
-    }
-  }
-
-  if (source === "luogu" && !luoguProblemId) {
-    throw new Error("当前页面不是洛谷题目页，无法识别题号。请打开 https://www.luogu.com.cn/problem/P1001 这类题目页。");
-  }
-
-  if (source === "page") {
-    return {
-      fromServer: false,
-      source: "页面内容",
-      problem: buildLocalProblem(payload)
-    };
-  }
-
-  if (endpoint && (source === "custom" || source === "auto")) {
-    return fetchCustomProblemServer(endpoint, token, timeoutSeconds, payload);
-  }
-
-  if (options.requireServer) {
-    throw new Error("题目服务器地址为空。请先在插件弹窗中填写服务器地址，或把题目来源改为洛谷。");
-  }
-
-  return {
-    fromServer: false,
-    source: payload.platform === "luogu" ? "洛谷页面内容" : "页面内容",
-    problem: buildLocalProblem(payload)
-  };
-}
-
-const __disabled_fetchProblemContextV2 = String.raw`async function fetchProblemContextV2(payload, options = {}) {
-  const settings = await chrome.storage.sync.get(DEFAULT_SETTINGS);
-  const endpoint = String(settings.problemServerEndpoint || "").trim();
-  const token = String(settings.problemServerToken || "").trim();
-  const source = settings.problemSource || "auto";
-  const timeoutSeconds = normalizeTimeout(settings.timeoutSeconds);
-  const platform = detectProblemPlatform(payload.pageUrl, payload.platform);
-  const luoguProblemId = platform === "luogu"
-    ? String(payload.problemId || "").trim() || getLuoguProblemId(payload.pageUrl)
-    : getLuoguProblemId(payload.pageUrl);
-  const leetcodeProblemId = platform === "leetcode"
-    ? String(payload.problemId || "").trim() || getLeetCodeProblemSlug(payload.pageUrl)
-    : getLeetCodeProblemSlug(payload.pageUrl);
-  const normalizedPayload = {
-    ...payload,
-    platform,
-    problemId: platform === "luogu"
-      ? luoguProblemId
-      : platform === "leetcode"
-        ? leetcodeProblemId
-        : String(payload.problemId || "").trim()
-  };
-
-  if ((source === "luogu" || (source === "auto" && luoguProblemId)) && luoguProblemId) {
-    try {
-      return await fetchLuoguProblem(luoguProblemId, timeoutSeconds);
-    } catch (error) {
-      if (source === "luogu" || options.requireServer) {
-        throw error;
-      }
-    }
-  }
-
-  if ((source === "leetcode" || (source === "auto" && leetcodeProblemId)) && leetcodeProblemId) {
-    try {
-      return await fetchLeetCodeProblem(leetcodeProblemId, normalizedPayload.pageUrl, timeoutSeconds);
-    } catch (error) {
-      if (source === "leetcode" || options.requireServer) {
-        throw error;
-      }
-    }
-  }
-
-  if (source === "luogu" && !luoguProblemId) {
-    throw new Error("褰撳墠椤甸潰涓嶆槸娲涜胺棰樼洰椤碉紝鏃犳硶璇嗗埆棰樺彿銆傝鎵撳紑 https://www.luogu.com.cn/problem/P1001 杩欑被棰樼洰椤点€?");
-  }
-
-  if (source === "leetcode" && !leetcodeProblemId) {
-    throw new Error("褰撳墠椤甸潰涓嶆槸鍔涘彛棰樼洰椤碉紝鏃犳硶璇嗗埆棰樼洰鏍囪瘑銆傝鎵撳紑 https://leetcode.cn/problems/two-sum/description/ 杩欑被鍔涘彛棰樼洰椤点€?");
-  }
-
-  if (source === "page") {
-    return {
-      fromServer: false,
-      source: "椤甸潰鍐呭",
-      problem: buildLocalProblem(normalizedPayload)
-    };
-  }
-
-  if (endpoint && (source === "custom" || source === "auto")) {
-    return fetchCustomProblemServer(endpoint, token, timeoutSeconds, normalizedPayload);
-  }
-
-  if (options.requireServer) {
-    throw new Error("棰樼洰鏈嶅姟鍣ㄥ湴鍧€涓虹┖銆傝鍏堝湪鎻掍欢寮圭獥涓～鍐欐湇鍔″櫒鍦板潃锛屾垨鎶婇鐩潵婧愭敼涓烘礇璋锋垨鍔涘彛銆?");
-  }
-
-  return {
-    fromServer: false,
-    source: getPlatformPageSource(platform) || "椤甸潰鍐呭",
-    problem: buildLocalProblem(normalizedPayload)
-  };
-}`;
-
 async function fetchProblemContextV3(payload, options = {}) {
-  const settings = await chrome.storage.sync.get(DEFAULT_SETTINGS);
+  const [settings, secrets] = await Promise.all([
+    chrome.storage.sync.get(DEFAULT_SETTINGS),
+    chrome.storage.local.get({ problemServerToken: "" })
+  ]);
   const endpoint = String(settings.problemServerEndpoint || "").trim();
-  const token = String(settings.problemServerToken || "").trim();
+  const token = String(secrets.problemServerToken || settings.problemServerToken || "").trim();
   const source = settings.problemSource || "auto";
   const timeoutSeconds = normalizeTimeout(settings.timeoutSeconds);
   const platform = detectProblemPlatform(payload.pageUrl, payload.platform);
@@ -2284,7 +1904,11 @@ async function fetchProblemContextV3(payload, options = {}) {
   }
 
   if (endpoint && (source === "custom" || source === "auto")) {
-    return fetchCustomProblemServer(endpoint, token, timeoutSeconds, normalizedPayload);
+    return fetchCustomProblemServer(endpoint, token, timeoutSeconds, normalizedPayload, {
+      sendPageText: settings.problemServerSendPageText !== false,
+      sendSelection: Boolean(settings.problemServerSendSelection),
+      sendCode: Boolean(settings.problemServerSendCode)
+    });
   }
 
   if (options.requireServer) {
@@ -2298,7 +1922,8 @@ async function fetchProblemContextV3(payload, options = {}) {
   };
 }
 
-async function fetchCustomProblemServer(endpoint, token, timeoutSeconds, payload) {
+async function fetchCustomProblemServer(endpoint, token, timeoutSeconds, payload, privacy = {}) {
+  assertAllowedProblemServerEndpoint(endpoint);
   const headers = {
     "Content-Type": "application/json"
   };
@@ -2313,9 +1938,9 @@ async function fetchCustomProblemServer(endpoint, token, timeoutSeconds, payload
     body: JSON.stringify({
       pageUrl: payload.pageUrl || "",
       pageTitle: payload.pageTitle || "",
-      pageText: compactText(payload.pageText, PROBLEM_TEXT_LIMIT),
-      selection: compactText(payload.selection, 4000),
-      code: compactText(payload.code, 12000),
+      pageText: privacy.sendPageText === false ? "" : compactText(payload.pageText, PROBLEM_TEXT_LIMIT),
+      selection: privacy.sendSelection ? compactText(payload.selection, 4000) : "",
+      code: privacy.sendCode ? compactText(payload.code, 12000) : "",
       language: payload.language || "auto",
       platform: payload.platform || "",
       problemId: payload.problemId || "",
@@ -2343,10 +1968,84 @@ async function fetchCustomProblemServer(endpoint, token, timeoutSeconds, payload
 
   return {
     fromServer: true,
-    source: "自定义服务器",
+    source: data && typeof data.source === "string" && data.source.trim()
+      ? data.source.trim()
+      : "自定义服务器",
     problem,
+    meta: data && data.meta && typeof data.meta === "object" ? data.meta : {},
     data
   };
+}
+
+async function testCustomProblemServer(endpoint, token, timeoutSeconds, fallbackPayload) {
+  assertAllowedProblemServerEndpoint(endpoint);
+  const headers = { Accept: "application/json" };
+
+  if (token) {
+    headers.Authorization = "Bearer " + token;
+  }
+
+  const healthUrl = getProblemServerHealthUrl(endpoint);
+  const response = await fetchWithTimeout(healthUrl, {
+    method: "GET",
+    headers
+  }, timeoutSeconds, "题目服务器健康检查");
+
+  if (response.status === 404 || response.status === 405) {
+    return fetchProblemContextV3(fallbackPayload, { requireServer: true });
+  }
+
+  const rawText = await response.text();
+  const data = safeParseJson(rawText);
+
+  if (looksLikeHtml(rawText)) {
+    throw new Error("题目服务器健康检查返回了 HTML，而不是 JSON。");
+  }
+
+  if (!response.ok) {
+    const message = getErrorMessage(data, rawText) || "题目服务器健康检查失败，状态码：" + response.status;
+    throw new Error(message);
+  }
+
+  if (!data || data.ok !== true) {
+    throw new Error("题目服务器 /health 没有返回 { ok: true }。");
+  }
+
+  const name = String(data.name || "自定义服务器").trim();
+  const version = String(data.version || "").trim();
+
+  return {
+    fromServer: true,
+    source: name,
+    problem: version ? "健康检查成功，服务器版本 " + version + "。" : "健康检查成功。",
+    data
+  };
+}
+
+function getProblemServerHealthUrl(endpoint) {
+  const url = new URL(String(endpoint || ""));
+  const pathname = url.pathname.replace(/\/+$/, "");
+
+  url.pathname = /\/problem-context$/i.test(pathname)
+    ? pathname.replace(/\/problem-context$/i, "/health")
+    : pathname + "/health";
+  url.search = "";
+  url.hash = "";
+  return url.toString();
+}
+
+function assertAllowedProblemServerEndpoint(endpoint) {
+  let url;
+  try {
+    url = new URL(String(endpoint || ""));
+  } catch {
+    throw new Error("题目服务器地址不是有效 URL。");
+  }
+
+  const isLocal = url.hostname === "localhost" || url.hostname === "127.0.0.1" || url.hostname === "[::1]";
+  if (url.protocol !== "https:" && !(url.protocol === "http:" && isLocal)) {
+    throw new Error("题目服务器必须使用 HTTPS；本地开发可使用 localhost 或 127.0.0.1。");
+  }
 }
 
 async function fetchLuoguProblem(problemId, timeoutSeconds) {
@@ -3808,20 +3507,6 @@ function normalizeTimeout(value) {
   }
 
   return Math.min(300, Math.max(30, Math.round(seconds)));
-}
-
-function getMaxTokens(messages) {
-  const text = (messages || []).map((message) => message.content || "").join("\n");
-
-  if (text.includes("建议代码") || text.includes("下一步说明")) {
-    return 2400;
-  }
-
-  if (text.includes("检查结论") || text.includes("问题列表")) {
-    return 2800;
-  }
-
-  return 2200;
 }
 
 function compactText(value, maxLength) {

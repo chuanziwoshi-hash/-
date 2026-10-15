@@ -255,6 +255,113 @@
       .trim();
   }
 
+  function stripCodeComments(value, language) {
+    const source = String(value || "").replace(/\r\n?/g, "\n");
+    const resolvedLanguage = !language || language === "auto"
+      ? detectLanguage(source, "auto")
+      : String(language).toLowerCase();
+    const pythonComments = resolvedLanguage === "python";
+    let result = "";
+    let quote = "";
+    let escaped = false;
+    let inLineComment = false;
+    let inBlockComment = false;
+    let inHtmlComment = false;
+
+    for (let index = 0; index < source.length; index += 1) {
+      const char = source[index];
+      const next = source[index + 1];
+
+      if (inLineComment) {
+        if (char === "\n") {
+          result = result.replace(/[ \t]+$/, "") + "\n";
+          inLineComment = false;
+        }
+        continue;
+      }
+
+      if (inBlockComment) {
+        if (char === "\n") {
+          result = result.replace(/[ \t]+$/, "") + "\n";
+          continue;
+        }
+        if (char === "*" && next === "/") {
+          inBlockComment = false;
+          index += 1;
+        }
+        continue;
+      }
+
+      if (inHtmlComment) {
+        if (char === "\n") {
+          result = result.replace(/[ \t]+$/, "") + "\n";
+          continue;
+        }
+        if (source.startsWith("-->", index)) {
+          inHtmlComment = false;
+          index += 2;
+        }
+        continue;
+      }
+
+      if (quote) {
+        result += char;
+        if (escaped) {
+          escaped = false;
+        } else if (char === "\\") {
+          escaped = true;
+        } else if (char === quote) {
+          quote = "";
+        }
+        continue;
+      }
+
+      if (source.startsWith("<!--", index)) {
+        appendCommentSpacer();
+        inHtmlComment = true;
+        index += 3;
+        continue;
+      }
+
+      if (char === "/" && next === "*") {
+        appendCommentSpacer();
+        inBlockComment = true;
+        index += 1;
+        continue;
+      }
+
+      if (char === "/" && next === "/") {
+        inLineComment = true;
+        index += 1;
+        continue;
+      }
+
+      if (pythonComments && char === "#") {
+        inLineComment = true;
+        continue;
+      }
+
+      if (char === "\"" || char === "'" || char === "`") {
+        quote = char;
+        result += char;
+        continue;
+      }
+
+      result += char;
+    }
+
+    return finalizeCode(result
+      .split("\n")
+      .map((line) => line.replace(/[ \t]+$/g, ""))
+      .join("\n"));
+
+    function appendCommentSpacer() {
+      if (result && !/\s$/.test(result)) {
+        result += " ";
+      }
+    }
+  }
+
   function normalizeProblemPayload(payload) {
     if (!payload) {
       return "";
@@ -286,12 +393,505 @@
     return "";
   }
 
+  function applyTextChange(value, start, end, replacement) {
+    const text = String(value || "");
+    const safeStart = Math.max(0, Math.min(Number(start) || 0, text.length));
+    const safeEnd = Math.max(safeStart, Math.min(Number(end) || 0, text.length));
+
+    return text.slice(0, safeStart) + String(replacement || "") + text.slice(safeEnd);
+  }
+
+  function prependStatusMessage(status, previousText) {
+    const statusText = String(status || "").trim();
+    const restoredText = String(previousText || "");
+
+    if (!statusText) return restoredText;
+    if (!restoredText) return statusText;
+    return statusText + "\n\n" + restoredText;
+  }
+
+  function buildTextDiff(beforeValue, afterValue) {
+    const before = String(beforeValue || "").replace(/\r\n?/g, "\n");
+    const after = String(afterValue || "").replace(/\r\n?/g, "\n");
+    const oldLines = splitDiffLines(before);
+    const newLines = splitDiffLines(after);
+    let prefix = 0;
+
+    while (prefix < oldLines.length && prefix < newLines.length && oldLines[prefix] === newLines[prefix]) {
+      prefix += 1;
+    }
+
+    let suffix = 0;
+    while (
+      suffix < oldLines.length - prefix &&
+      suffix < newLines.length - prefix &&
+      oldLines[oldLines.length - 1 - suffix] === newLines[newLines.length - 1 - suffix]
+    ) {
+      suffix += 1;
+    }
+
+    const oldChangeEnd = oldLines.length - suffix;
+    const newChangeEnd = newLines.length - suffix;
+    const lines = [];
+
+    for (let index = 0; index < prefix; index += 1) {
+      lines.push(createDiffLine("context", index + 1, index + 1, oldLines[index]));
+    }
+
+    for (let index = prefix; index < oldChangeEnd; index += 1) {
+      lines.push(createDiffLine("removed", index + 1, null, oldLines[index]));
+    }
+
+    for (let index = prefix; index < newChangeEnd; index += 1) {
+      lines.push(createDiffLine("added", null, index + 1, newLines[index]));
+    }
+
+    for (let offset = 0; offset < suffix; offset += 1) {
+      const oldIndex = oldChangeEnd + offset;
+      const newIndex = newChangeEnd + offset;
+      lines.push(createDiffLine("context", oldIndex + 1, newIndex + 1, oldLines[oldIndex]));
+    }
+
+    return {
+      changed: before !== after,
+      added: Math.max(0, newChangeEnd - prefix),
+      removed: Math.max(0, oldChangeEnd - prefix),
+      lines
+    };
+  }
+
+  function splitDiffLines(value) {
+    return value === "" ? [] : value.split("\n");
+  }
+
+  function createDiffLine(type, oldNumber, newNumber, text) {
+    return { type, oldNumber, newNumber, text };
+  }
+
+  function formatCode(value, language) {
+    const code = normalizeCode(value);
+    const normalizedLanguage = String(language || "").toLowerCase();
+    const unit = ["javascript", "typescript", "html", "css"].includes(normalizedLanguage) ? "  " : "    ";
+
+    if (!code.trim()) {
+      return "";
+    }
+
+    if (normalizedLanguage === "python") {
+      return formatPythonCode(code, unit);
+    }
+
+    if (isBraceLanguage(normalizedLanguage)) {
+      return formatBraceCode(code, unit);
+    }
+
+    return finalizeCode(code
+      .split("\n")
+      .map((line) => line.replace(/\t/g, unit).replace(/[ \t]+$/g, ""))
+      .join("\n"));
+  }
+
+  function mapFormattedOffset(beforeValue, afterValue, offset) {
+    const before = String(beforeValue || "");
+    const after = String(afterValue || "");
+    const safeOffset = Math.max(0, Math.min(Number(offset) || 0, before.length));
+    const significantBefore = before.slice(0, safeOffset).replace(/\s/g, "").length;
+
+    if (significantBefore === 0) {
+      return 0;
+    }
+
+    let seen = 0;
+    for (let index = 0; index < after.length; index += 1) {
+      if (!/\s/.test(after[index])) {
+        seen += 1;
+      }
+
+      if (seen >= significantBefore) {
+        return index + 1;
+      }
+    }
+
+    return after.length;
+  }
+
+  function normalizeCode(value) {
+    return String(value || "")
+      .replace(/\u0000/g, "")
+      .replace(/\r\n?/g, "\n");
+  }
+
+  function isBraceLanguage(language) {
+    return new Set([
+      "c", "cpp98", "cpp11", "cpp14", "cpp17", "cpp20", "csharp", "css", "go",
+      "java8", "java11", "java17", "javascript", "typescript"
+    ]).has(language);
+  }
+
+  function formatBraceCode(code, unit) {
+    const lines = splitBraceStatements(code);
+    const result = [];
+    const state = { inBlockComment: false };
+    const spacingState = { inBlockComment: false, quote: "", escaped: false };
+    let indentLevel = 0;
+    let previousWasBlank = false;
+
+    for (const rawLine of lines) {
+      const trimmed = rawLine.replace(/\t/g, unit).trim();
+
+      if (!trimmed) {
+        if (!previousWasBlank && result.length > 0) {
+          result.push("");
+          previousWasBlank = true;
+        }
+        continue;
+      }
+
+      const spacedLine = normalizeBraceLineSpacing(trimmed, spacingState);
+      const structureLine = stripFormattingNoise(spacedLine, state);
+      let currentIndent = indentLevel;
+
+      if (/^}/.test(spacedLine)) {
+        currentIndent -= 1;
+      }
+
+      if (/^(public|private|protected)\s*:\s*$/.test(spacedLine) || /^(case\b[\s\S]*:|default\s*:)\s*$/.test(spacedLine)) {
+        currentIndent -= 1;
+      }
+
+      if (/^#\s*[A-Za-z_]/.test(spacedLine)) {
+        currentIndent = 0;
+      }
+
+      currentIndent = Math.max(0, currentIndent);
+      result.push(unit.repeat(currentIndent) + spacedLine);
+      previousWasBlank = false;
+
+      const braceDelta = countCharacter(structureLine, "{") - countCharacter(structureLine, "}");
+      indentLevel = Math.max(0, indentLevel + braceDelta);
+
+      if (/^(public|private|protected)\s*:\s*$/.test(spacedLine) || /^(case\b[\s\S]*:|default\s*:)\s*$/.test(spacedLine)) {
+        indentLevel = Math.max(indentLevel, currentIndent + 1);
+      }
+    }
+
+    return finalizeCode(result.join("\n"));
+  }
+
+  function normalizeBraceLineSpacing(line, state) {
+    if (/^#\s*[A-Za-z_]/.test(line)) {
+      return line;
+    }
+
+    let result = "";
+    let code = "";
+
+    const flushCode = () => {
+      result += normalizeCodeSegmentSpacing(code);
+      code = "";
+    };
+
+    for (let index = 0; index < line.length; index += 1) {
+      const char = line[index];
+      const next = line[index + 1];
+
+      if (state.inBlockComment) {
+        result += char;
+        if (char === "*" && next === "/") {
+          result += next;
+          state.inBlockComment = false;
+          index += 1;
+        }
+        continue;
+      }
+
+      if (state.quote) {
+        result += char;
+        if (state.escaped) {
+          state.escaped = false;
+        } else if (char === "\\") {
+          state.escaped = true;
+        } else if (char === state.quote) {
+          state.quote = "";
+        }
+        continue;
+      }
+
+      if (char === "/" && next === "/") {
+        flushCode();
+        const comment = line.slice(index);
+        result = result.replace(/[ \t]*$/, result.trim() ? " " : "") + comment;
+        return result.trimEnd();
+      }
+
+      if (char === "/" && next === "*") {
+        flushCode();
+        if (result && !/\s$/.test(result)) result += " ";
+        result += "/*";
+        state.inBlockComment = true;
+        index += 1;
+        continue;
+      }
+
+      if (char === "\"" || char === "'" || char === "`") {
+        flushCode();
+        state.quote = char;
+        result += char;
+        continue;
+      }
+
+      code += char;
+    }
+
+    flushCode();
+    return result.trim();
+  }
+
+  function normalizeCodeSegmentSpacing(value) {
+    const operatorPattern = /(===|!==|<<=|>>=|\+=|-=|\*=|\/=|%=|&=|\|=|\^=|==|!=|<=|>=|&&|\|\||=>|=)/g;
+    let text = String(value || "")
+      .replace(/[ \t]+/g, " ")
+      .replace(/\s*,\s*/g, ", ")
+      .replace(operatorPattern, " $1 ")
+      .replace(/;\s*/g, "; ")
+      .replace(/\b(if|for|while|switch|catch)\s*\(/g, "$1 (")
+      .replace(/\s*\{$/, " {")
+      .replace(/[ \t]+/g, " ");
+
+    text = text.replace(/([\w)\]])\s*([+\-/%])\s*([\w(\[])/g, (match, left, operator, right, offset, source) => {
+      const previousWord = source.slice(0, offset + 1).match(/([A-Za-z_]\w*)$/);
+      if (previousWord && /^(return|throw|case|new|delete|sizeof)$/.test(previousWord[1])) {
+        return match;
+      }
+      return left + " " + operator + " " + right;
+    });
+    return text;
+  }
+
+  function splitBraceStatements(code) {
+    const result = [];
+    let buffer = "";
+    let quote = "";
+    let escaped = false;
+    let inBlockComment = false;
+    let inLineComment = false;
+    let inPreprocessor = false;
+    let parenthesisDepth = 0;
+    let bracketDepth = 0;
+    let lineHasContent = false;
+
+    const flush = () => {
+      const text = buffer.trim();
+      if (text) {
+        result.push(text);
+        lineHasContent = true;
+      }
+      buffer = "";
+    };
+
+    for (let index = 0; index < code.length; index += 1) {
+      const char = code[index];
+      const next = code[index + 1];
+
+      if (char === "\n") {
+        flush();
+        if (!lineHasContent && result[result.length - 1] !== "") {
+          result.push("");
+        }
+        lineHasContent = false;
+        inLineComment = false;
+        inPreprocessor = false;
+        buffer = "";
+        continue;
+      }
+
+      if (!lineHasContent && !buffer.trim() && char === "#" && !quote && !inBlockComment) {
+        inPreprocessor = true;
+      }
+
+      if (inPreprocessor || inLineComment) {
+        buffer += char;
+        continue;
+      }
+
+      if (inBlockComment) {
+        buffer += char;
+        if (char === "*" && next === "/") {
+          buffer += next;
+          inBlockComment = false;
+          index += 1;
+        }
+        continue;
+      }
+
+      if (quote) {
+        buffer += char;
+        if (escaped) {
+          escaped = false;
+        } else if (char === "\\") {
+          escaped = true;
+        } else if (char === quote) {
+          quote = "";
+        }
+        continue;
+      }
+
+      if (char === "/" && next === "/") {
+        buffer += "//";
+        inLineComment = true;
+        index += 1;
+        continue;
+      }
+
+      if (char === "/" && next === "*") {
+        buffer += "/*";
+        inBlockComment = true;
+        index += 1;
+        continue;
+      }
+
+      if (char === "\"" || char === "'" || char === "`") {
+        quote = char;
+        buffer += char;
+        continue;
+      }
+
+      if (char === "(") parenthesisDepth += 1;
+      if (char === ")") parenthesisDepth = Math.max(0, parenthesisDepth - 1);
+      if (char === "[") bracketDepth += 1;
+      if (char === "]") bracketDepth = Math.max(0, bracketDepth - 1);
+
+      if (char === "{") {
+        buffer += char;
+        flush();
+        continue;
+      }
+
+      if (char === "}") {
+        flush();
+        result.push("}");
+        lineHasContent = true;
+        continue;
+      }
+
+      if (char === ";" && parenthesisDepth === 0 && bracketDepth === 0) {
+        if (!buffer.trim() && result.length > 0 && /^}/.test(result[result.length - 1])) {
+          result[result.length - 1] += ";";
+        } else {
+          buffer += char;
+          flush();
+        }
+        continue;
+      }
+
+      buffer += char;
+    }
+
+    flush();
+    return result;
+  }
+
+  function formatPythonCode(code, unit) {
+    const result = [];
+    const indentStack = [0];
+    let previousWasBlank = false;
+
+    for (const rawLine of code.split("\n")) {
+      const trimmed = rawLine.replace(/\t/g, unit).trim();
+
+      if (!trimmed) {
+        if (!previousWasBlank && result.length > 0) {
+          result.push("");
+          previousWasBlank = true;
+        }
+        continue;
+      }
+
+      const sourceIndent = measureIndent(rawLine);
+      while (indentStack.length > 1 && sourceIndent < indentStack[indentStack.length - 1]) {
+        indentStack.pop();
+      }
+
+      if (sourceIndent > indentStack[indentStack.length - 1]) {
+        indentStack.push(sourceIndent);
+      }
+
+      result.push(unit.repeat(indentStack.length - 1) + trimmed);
+      previousWasBlank = false;
+    }
+
+    return finalizeCode(result.join("\n"));
+  }
+
+  function measureIndent(line) {
+    const leading = (String(line || "").match(/^[ \t]*/) || [""])[0];
+    return Array.from(leading).reduce((width, char) => width + (char === "\t" ? 4 : 1), 0);
+  }
+
+  function stripFormattingNoise(line, state) {
+    let result = "";
+    let quote = "";
+    let escaped = false;
+
+    for (let index = 0; index < line.length; index += 1) {
+      const char = line[index];
+      const next = line[index + 1];
+
+      if (state.inBlockComment) {
+        if (char === "*" && next === "/") {
+          state.inBlockComment = false;
+          index += 1;
+        }
+        continue;
+      }
+
+      if (quote) {
+        if (escaped) escaped = false;
+        else if (char === "\\") escaped = true;
+        else if (char === quote) quote = "";
+        continue;
+      }
+
+      if (char === "/" && next === "*") {
+        state.inBlockComment = true;
+        index += 1;
+        continue;
+      }
+
+      if (char === "/" && next === "/") break;
+      if (char === "\"" || char === "'" || char === "`") {
+        quote = char;
+        continue;
+      }
+      result += char;
+    }
+
+    return result;
+  }
+
+  function countCharacter(value, needle) {
+    return Array.from(String(value || "")).reduce((count, char) => count + (char === needle ? 1 : 0), 0);
+  }
+
+  function finalizeCode(value) {
+    return String(value || "")
+      .replace(/^(?:[ \t]*\n)+/, "")
+      .replace(/(?:\n[ \t]*)+$/, "")
+      .replace(/\n{3,}/g, "\n\n");
+  }
+
   window.CodingAssistantCore = {
+    applyTextChange,
+    buildTextDiff,
     buildMessages,
     compactText,
     detectLanguage,
     extractSuggestedCode,
+    formatCode,
     langName,
-    normalizeProblemPayload
+    mapFormattedOffset,
+    normalizeProblemPayload,
+    prependStatusMessage,
+    stripCodeComments
   };
 })();
